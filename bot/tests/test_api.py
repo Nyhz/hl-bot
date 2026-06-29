@@ -51,3 +51,14 @@ def test_kill_requires_confirm_flag():
     r = client.post("/session/kill", json={"confirm": False},
                     headers={"X-Control-Token": TOKEN})
     assert r.status_code == 400
+
+def test_close_from_idle_is_ok():
+    client, engine = _client()
+    r = client.post("/session/close", headers={"X-Control-Token": TOKEN})
+    assert r.status_code == 200
+    assert r.json()["state"] == "idle"
+
+def test_close_requires_token():
+    client, _ = _client()
+    r = client.post("/session/close")
+    assert r.status_code == 401

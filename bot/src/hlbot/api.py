@@ -62,7 +62,10 @@ def create_app(engine: SessionEngine, control_token: str,
     @app.post("/session/close")
     def close(x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
-        engine.close()
+        try:
+            engine.close()
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         return {"state": engine.state.value}
 
     @app.post("/session/kill")
