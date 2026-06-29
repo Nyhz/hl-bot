@@ -8,13 +8,23 @@ class FakeClient:
     def __init__(self):
         self.orders = []
         self.closed = []
+        self.stops = []
+        self.canceled = []
+        self.resting = []
         self._mid = {"ETH": 3000.0}
+        self.account_value = "40"
+        self.positions = []
     def mid(self, coin): return self._mid[coin]
-    def user_state(self): return {"assetPositions": [], "marginSummary": {"accountValue": "40"}}
+    def user_state(self):
+        return {"assetPositions": self.positions,
+                "marginSummary": {"accountValue": self.account_value}}
     def place_limit(self, coin, is_buy, price, size, post_only=True, reduce_only=False):
         self.orders.append((coin, is_buy, price, size, reduce_only, post_only)); return {"status": "ok"}
+    def place_stop(self, coin, is_buy, trigger_px, size, reduce_only=True):
+        self.stops.append((coin, is_buy, trigger_px, size, reduce_only)); return {"status": "ok"}
     def market_close(self, coin): self.closed.append(coin); return {"status": "ok"}
-    def cancel_all(self, coin): pass
+    def cancel_all(self, coin): self.canceled.append(coin)
+    def open_orders(self, coin): return list(self.resting)
 
 class FakeStore:
     def __init__(self): self.decisions = []; self.sid = 1
@@ -126,3 +136,24 @@ def test_closing_reduce_only_bypasses_risk_and_keeps_closing():
     eng.tick(_flat_ms())
     assert eng.state == SessionState.CLOSING          # reduce_only NO reactiva a ACTIVE
     assert any(o[4] is True for o in client.orders)   # la orden reduce_only se colocó (risk no la bloqueó)
+
+
+def test_loss_limit_triggers_auto_close():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())                                   # session_start_value = 40
+    client.account_value = "34"                          # total_pnl = -6 <= -5 (daily limit)
+    client.positions = [{"position": {"coin": "ETH"}}]   # 1 posición abierta -> no auto-reset
+    eng.tick(_flat_ms())
+    assert eng.paused is True
+    assert eng.state == SessionState.CLOSING
+
+def test_daily_anchor_resets_on_new_local_day():
+    from datetime import date
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng._today_local = lambda: date(2099, 1, 2)          # fuerza cambio de día
+    client.account_value = "100"
+    eng.tick(_flat_ms())
+    assert eng.day_anchor_value == 100.0                 # re-anclado al nuevo día

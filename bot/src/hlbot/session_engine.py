@@ -18,6 +18,9 @@ class SessionEngine:
         self.risk: RiskManager | None = None
         self.grids: dict[str, GridStrategy] = {}
         self.trends: dict[str, TrendOverlayStrategy] = {}
+        self.session_start_value: float = 0.0
+        self.day_anchor_value: float = 0.0
+        self.day_anchor_date = None
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
@@ -32,6 +35,9 @@ class SessionEngine:
             g.set_anchor(self.client.mid(coin))
             self.grids[coin] = g
             self.trends[coin] = TrendOverlayStrategy(cfg)
+        self.session_start_value = self._account_value()
+        self.day_anchor_value = self.session_start_value
+        self.day_anchor_date = self._today_local()
         self.paused = False
         self.state = SessionState.SCANNING
 
@@ -58,6 +64,9 @@ class SessionEngine:
         self.risk = None
         self.grids = {}
         self.trends = {}
+        self.session_start_value = 0.0
+        self.day_anchor_value = 0.0
+        self.day_anchor_date = None
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
@@ -70,9 +79,34 @@ class SessionEngine:
         state = self.client.user_state()
         return len(state.get("assetPositions", []))
 
+    def _account_value(self) -> float:
+        state = self.client.user_state()
+        return float(state["marginSummary"]["accountValue"])
+
+    def _today_local(self):
+        from datetime import datetime
+        return datetime.now().astimezone().date()
+
+    def _check_loss_limits(self) -> None:
+        if self.risk is None:
+            return
+        value = self._account_value()
+        today = self._today_local()
+        if today != self.day_anchor_date:
+            self.day_anchor_value = value
+            self.day_anchor_date = today
+        total_pnl = value - self.session_start_value
+        daily_pnl = value - self.day_anchor_value
+        pause, reason = self.risk.should_pause(daily_pnl, total_pnl)
+        if pause and self.state != SessionState.CLOSING:
+            self.store.record_risk_event(self.session_id, "limite", reason)
+            self.paused = True
+            self.close()
+
     def tick(self, market_states: dict[str, MarketState]) -> None:
         if self.state == SessionState.IDLE or self.cfg is None:
             return
+        self._check_loss_limits()
         n_open = self._open_positions_count()
         for coin, ms in market_states.items():
             if coin not in self.grids:
