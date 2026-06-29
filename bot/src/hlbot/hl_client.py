@@ -26,6 +26,11 @@ def meets_min_notional(price: float, size: float, min_notional: float = 10.0) ->
     return price * size >= min_notional
 
 
+def stop_order_type(trigger_px: float) -> dict:
+    # Orden trigger stop-loss de mercado (cierra la posición al cruzar triggerPx).
+    return {"trigger": {"isMarket": True, "triggerPx": trigger_px, "tpsl": "sl"}}
+
+
 from hyperliquid.info import Info
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
@@ -78,3 +83,20 @@ class HLClient:
         for o in self.info.open_orders(self.address):
             if o["coin"] == coin:
                 self.exchange.cancel(coin, o["oid"])
+
+    def open_orders(self, coin: str) -> list[dict]:
+        return [o for o in self.info.open_orders(self.address) if o.get("coin") == coin]
+
+    def place_stop(self, coin: str, is_buy: bool, trigger_px: float, size: float,
+                   reduce_only: bool = True, slippage: float = 0.005) -> dict:
+        szd = self.sz_decimals[coin]
+        trig = round_price(trigger_px, szd)
+        # limit_px agresivo más allá del trigger para asegurar la ejecución del trigger de mercado:
+        # un stop que COMPRA (cierra un corto) acepta pagar más; uno que VENDE acepta cobrar menos.
+        limit = trigger_px * (1 + slippage) if is_buy else trigger_px * (1 - slippage)
+        limit = round_price(limit, szd)
+        sz = round_size(size, szd)
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        return self.exchange.order(coin, is_buy, sz, limit, stop_order_type(trig),
+                                   reduce_only=reduce_only)

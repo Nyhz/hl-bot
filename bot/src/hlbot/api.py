@@ -58,6 +58,8 @@ def create_app(engine: SessionEngine, control_token: str,
             engine.launch(cfg)
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         return {"state": engine.state.value}
 
     @app.post("/session/close")

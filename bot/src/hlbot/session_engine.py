@@ -18,10 +18,20 @@ class SessionEngine:
         self.risk: RiskManager | None = None
         self.grids: dict[str, GridStrategy] = {}
         self.trends: dict[str, TrendOverlayStrategy] = {}
+        self.session_start_value: float = 0.0
+        self.day_anchor_value: float = 0.0
+        self.day_anchor_date = None
+        self.trend_open: set[str] = set()
+        self.stops_placed: set[str] = set()
+        self.trend_confirmed: set[str] = set()
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
             raise RuntimeError(f"no se puede lanzar en estado {self.state}")
+        if cfg.grid_n * 10.0 > cfg.capital:
+            raise ValueError(
+                f"capital {cfg.capital} insuficiente para grid_n={cfg.grid_n} "
+                f"(necesita >= {cfg.grid_n * 10.0})")
         self.cfg = cfg
         self.risk = RiskManager(cfg.limits)
         self.session_id = self.store.create_session(cfg.watchlist, cfg.capital)
@@ -32,12 +42,21 @@ class SessionEngine:
             g.set_anchor(self.client.mid(coin))
             self.grids[coin] = g
             self.trends[coin] = TrendOverlayStrategy(cfg)
+        self.session_start_value = self._account_value()
+        self.day_anchor_value = self.session_start_value
+        self.day_anchor_date = self._today_local()
+        self.trend_open = set()
+        self.stops_placed = set()
+        self.trend_confirmed = set()
         self.paused = False
         self.state = SessionState.SCANNING
 
     def close(self) -> None:
         if self.state in (SessionState.SCANNING, SessionState.ACTIVE):
             self.state = SessionState.CLOSING
+            if self.cfg:
+                for coin in self.cfg.watchlist:
+                    self.client.cancel_all(coin)
 
     def kill(self, confirm: bool) -> None:
         if not confirm:
@@ -58,6 +77,12 @@ class SessionEngine:
         self.risk = None
         self.grids = {}
         self.trends = {}
+        self.session_start_value = 0.0
+        self.day_anchor_value = 0.0
+        self.day_anchor_date = None
+        self.trend_open = set()
+        self.stops_placed = set()
+        self.trend_confirmed = set()
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
@@ -66,23 +91,83 @@ class SessionEngine:
             return trend.evaluate(ms)  # tendencia: pausa el grid de este par
         return grid.evaluate(ms)
 
+    def _resting_prices(self, coin: str) -> list[float] | None:
+        try:
+            return [float(o["limitPx"]) for o in self.client.open_orders(coin)]
+        except Exception:
+            return None
+
+    def _has_resting_near(self, d, resting: list[float], ms: MarketState) -> bool:
+        if d.price is None or not resting:
+            return False
+        step = (2 * self.cfg.grid_range_pct * ms.mid) / self.cfg.grid_n
+        tol = step / 2
+        return any(abs(r - d.price) <= tol for r in resting)
+
     def _open_positions_count(self) -> int:
         state = self.client.user_state()
         return len(state.get("assetPositions", []))
 
+    def _position_coins(self) -> set[str]:
+        state = self.client.user_state()
+        out: set[str] = set()
+        for p in state.get("assetPositions", []):
+            coin = p.get("position", {}).get("coin")
+            if coin:
+                out.add(coin)
+        return out
+
+    def _account_value(self) -> float:
+        state = self.client.user_state()
+        return float(state["marginSummary"]["accountValue"])
+
+    def _today_local(self):
+        from datetime import datetime
+        return datetime.now().astimezone().date()
+
+    def _check_loss_limits(self) -> None:
+        if self.risk is None:
+            return
+        value = self._account_value()
+        today = self._today_local()
+        if today != self.day_anchor_date:
+            self.day_anchor_value = value
+            self.day_anchor_date = today
+        total_pnl = value - self.session_start_value
+        daily_pnl = value - self.day_anchor_value
+        pause, reason = self.risk.should_pause(daily_pnl, total_pnl)
+        if pause and self.state != SessionState.CLOSING:
+            self.store.record_risk_event(self.session_id, "limite", reason)
+            self.paused = True
+            self.close()
+
     def tick(self, market_states: dict[str, MarketState]) -> None:
         if self.state == SessionState.IDLE or self.cfg is None:
             return
+        self._check_loss_limits()
         n_open = self._open_positions_count()
+        open_coins = self._position_coins()
+        # Confirmar posiciones de tendencia ya visibles; limpiar SOLO las que estaban
+        # confirmadas y han desaparecido (stop ejecutado) -> evita doble entrada por
+        # latencia de fill (la posición recién abierta aún no aparece en user_state).
+        self.trend_confirmed |= (self.trend_open & open_coins)
+        gone = self.trend_confirmed - open_coins
+        self.trend_open -= gone
+        self.stops_placed -= gone
+        self.trend_confirmed -= gone
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
+            resting = self._resting_prices(coin)
+            if resting is None:
+                continue  # no pudimos leer ordenes en reposo: no operar este par este tick
             decisions = self._decisions_for(ms)
             for d in decisions:
-                # En CLOSING solo se permiten reduce_only / cierres.
                 if self.state == SessionState.CLOSING and not (
                     d.reduce_only or d.action in (ActionType.CLOSE, ActionType.SET_STOP)
                 ):
+                    continue
+                if d.action == ActionType.PLACE_LIMIT and self._has_resting_near(d, resting, ms):
                     continue
                 self._apply(coin, ms, d, n_open)
         if self.state == SessionState.CLOSING and n_open == 0:
@@ -108,6 +193,8 @@ class SessionEngine:
             if self.state != SessionState.CLOSING:
                 self.state = SessionState.ACTIVE
         elif d.action == ActionType.PLACE_MARKET:
+            if not d.reduce_only and coin in self.trend_open:
+                return
             if not d.reduce_only:
                 notional = ms.mid * (d.size or 0)
                 ok, reason = self.risk.can_open(notional, n_open,
@@ -123,10 +210,18 @@ class SessionEngine:
             except ValueError as e:
                 self.store.record_risk_event(self.session_id, "orden_rechazada", str(e))
                 return
+            if not d.reduce_only:
+                self.trend_open.add(coin)
             if self.state != SessionState.CLOSING:
                 self.state = SessionState.ACTIVE
         elif d.action == ActionType.CLOSE:
             self.client.market_close(coin)
+        elif d.action == ActionType.SET_STOP:
+            if coin in self.stops_placed or d.side is None or d.price is None:
+                return
+            self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0,
+                                   reduce_only=True)
+            self.stops_placed.add(coin)
         self.store.record_decision(self.session_id, coin, d.action.value, d.reason)
 
     def snapshot(self, market_states: dict[str, MarketState] | None = None) -> dict:
