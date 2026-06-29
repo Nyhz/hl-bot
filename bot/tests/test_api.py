@@ -155,6 +155,11 @@ def _api_with_store(store):
     engine = SessionEngine(FakeClient(), store)
     return TestClient(create_app(engine, TOKEN, lambda: {}, lambda: {}))
 
+def test_session_detail_404(tmp_path):
+    store, _, _ = _seed_two_sessions(tmp_path)
+    client = _api_with_store(store)
+    assert client.get("/sessions/99999").status_code == 404
+
 def test_sessions_list_filter_by_mode(tmp_path):
     store, s1, s2 = _seed_two_sessions(tmp_path)
     client = _api_with_store(store)

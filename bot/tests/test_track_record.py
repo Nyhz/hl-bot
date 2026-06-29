@@ -19,13 +19,19 @@ def test_session_summary():
     assert abs(s["fees"] - (0.0015 + 0.0010 + 0.0012)) < 1e-9
     assert abs(s["funding"] - (-0.001 + 0.0003)) < 1e-9
     assert abs(s["win_rate"] - 0.5) < 1e-9
-    assert s["net_pnl"] == 0.03                     # último snapshot
+    assert abs(s["net_pnl"] - 0.02) < 1e-9     # equity final - inicial = 0.03 - 0.01
 
 def test_session_summary_no_data():
     s = session_summary({"id": 2, "mode": "mainnet", "started_at": 1, "ended_at": None,
                          "capital": 50.0}, [], [], [])
     assert s["n_trades"] == 0 and s["win_rate"] == 0.0
     assert s["net_pnl"] == 0.0 and s["duration_s"] is None
+
+def test_session_summary_net_pnl_is_equity_delta():
+    snaps = [{"ts": 1, "total_pnl": 50.0}, {"ts": 2, "total_pnl": 50.4}]
+    s = session_summary({"id": 1, "mode": "testnet", "started_at": 1, "ended_at": 2,
+                         "capital": 50.0}, [], [], snaps)
+    assert abs(s["net_pnl"] - 0.4) < 1e-9      # 50.4 - 50.0
 
 def test_global_stats_separates_modes():
     summaries = [

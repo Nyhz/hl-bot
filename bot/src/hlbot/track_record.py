@@ -9,7 +9,10 @@ def session_summary(session_row: dict, fills: list[dict], funding: list[dict],
     fund = sum(float(f.get("amount") or 0) for f in funding)
     wins = sum(1 for f in closes if float(f.get("closed_pnl") or 0) > 0)
     win_rate = (wins / len(closes)) if closes else 0.0
-    net_pnl = float(pnl_snapshots[-1]["total_pnl"]) if pnl_snapshots else 0.0
+    # pnl_snapshots[].total_pnl es la EQUITY de cuenta en cada snapshot (el runner graba
+    # _account_value()); el PnL neto de la sesión = equity final - equity inicial.
+    net_pnl = (float(pnl_snapshots[-1]["total_pnl"]) - float(pnl_snapshots[0]["total_pnl"])) \
+        if pnl_snapshots else 0.0
     started = session_row.get("started_at")
     ended = session_row.get("ended_at")
     duration = (ended - started) if (started and ended) else None

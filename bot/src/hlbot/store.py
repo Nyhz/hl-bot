@@ -103,7 +103,7 @@ class Store:
 
     def list_sessions(self, mode: str | None = None) -> list[dict]:
         with self._conn() as conn:
-            if mode:
+            if mode is not None:
                 rows = conn.execute(
                     "SELECT * FROM sessions WHERE mode=? ORDER BY id DESC", (mode,)
                 ).fetchall()
