@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from hlbot.config import Config
 
 
@@ -8,15 +10,15 @@ def round_size(size: float, sz_decimals: int) -> float:
 
 
 def round_price(price: float, sz_decimals: int, max_decimals: int = 6) -> float:
-    # Hyperliquid perps: max 5 cifras significativas.
-    # max_decimals - sz_decimals defines exchange tick limit, but 5 sig figs always preserved.
+    # Hyperliquid perps: max 5 cifras significativas Y max (max_decimals - sz_decimals) decimales.
+    # Los decimales efectivos = min de ambas restricciones.
     if price == 0:
         return 0.0
-    from decimal import Decimal
     d = Decimal(repr(price))
-    sig = d.adjusted()  # exponente de la cifra mas significativa
-    places_for_sig = 4 - sig  # 5 sig figs -> 4 decimales tras la primera cifra
-    decimals = max(0, places_for_sig)
+    sig = d.adjusted()              # exponente de la cifra más significativa
+    places_for_sig = 4 - sig       # 5 cifras significativas
+    max_dec = max_decimals - sz_decimals
+    decimals = min(max_dec, max(0, places_for_sig))
     return round(price, decimals)
 
 

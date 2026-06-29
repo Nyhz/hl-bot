@@ -10,8 +10,13 @@ def test_round_price_decimals_limit():
     assert round_price(1234.567891, sz_decimals=1) == 1234.6  # 5 sig figs
 
 
-def test_round_price_five_sig_figs():
-    assert round_price(0.123456, sz_decimals=2) == 0.12346
+def test_round_price_five_sig_figs_capped_by_decimals():
+    # szDecimals=2 -> max 4 decimales (6-2); 5 sig figs necesitarían 5, se capan a 4
+    assert round_price(0.123456, sz_decimals=2) == 0.1235
+
+def test_round_price_five_sig_figs_uncapped():
+    # szDecimals=0 -> max 6 decimales; aquí mandan las 5 cifras significativas
+    assert round_price(0.123456, sz_decimals=0) == 0.12346
 
 
 def test_min_notional_above_threshold_is_true():
