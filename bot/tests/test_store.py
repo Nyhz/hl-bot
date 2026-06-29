@@ -46,3 +46,22 @@ def test_get_candles(tmp_path):
     rows = store.get_candles("ETH", "1m", limit=10)
     assert [r["t"] for r in rows] == [1, 2, 3]  # ascendente
     assert rows[0]["close"] == 10.5
+
+def test_init_schema_idempotent_and_adds_columns(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init_schema()
+    store.init_schema()  # 2ª vez no debe fallar (migración idempotente)
+    with store._conn() as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        assert "mode" in cols
+        fcols = {r[1] for r in conn.execute("PRAGMA table_info(fills)")}
+        assert {"tid", "closed_pnl", "dir"} <= fcols
+
+def test_create_session_with_mode_and_list(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    a = store.create_session(["ETH"], 40.0, mode="testnet")
+    b = store.create_session(["BTC"], 50.0, mode="mainnet")
+    assert store.get_session(a)["mode"] == "testnet"
+    testnet_ids = [s["id"] for s in store.list_sessions(mode="testnet")]
+    assert a in testnet_ids and b not in testnet_ids
+    assert len(store.list_sessions()) == 2  # sin filtro, todas

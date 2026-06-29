@@ -36,7 +36,9 @@ class SessionEngine:
                 f"(necesita >= {cfg.grid_n * 10.0})")
         self.cfg = cfg
         self.risk = RiskManager(cfg.limits)
-        self.session_id = self.store.create_session(cfg.watchlist, cfg.capital)
+        testnet = getattr(getattr(self.client, "cfg", None), "testnet", True)
+        self.session_id = self.store.create_session(
+            cfg.watchlist, cfg.capital, mode="testnet" if testnet else "mainnet")
         self.grids = {}
         self.trends = {}
         for coin in cfg.watchlist:
