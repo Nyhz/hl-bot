@@ -20,7 +20,8 @@ ACCOUNT_EXTRAS_EVERY = 6               # cada cuántos ticks refrescar fills/fun
 API_PORT = 3300
 
 
-def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool) -> dict:
+def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool,
+                          store=None) -> dict:
     try:
         ch = client.user_state()
     except Exception as e:
@@ -35,6 +36,8 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool) -> dic
             fills = [f for f in all_fills if int(f.get("time", 0) or 0) >= session_start_ms]
             funding = client.user_funding(session_start_ms)
             funding_total = sum(float(f.get("delta", {}).get("usdc", 0) or 0) for f in funding)
+            if store is not None and engine.session_id is not None:
+                _record_extras(store, engine.session_id, fills, funding)
         except Exception as e:
             print(f"[account_cache] extras error: {e}", flush=True)
     max_open = engine.cfg.limits.max_open_positions if engine.cfg else 0
@@ -42,6 +45,24 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool) -> dic
     acc["_fills"] = fills
     acc["_funding"] = funding_total
     return acc
+
+
+def _record_extras(store, session_id: int, fills: list[dict], funding: list[dict]) -> None:
+    for f in fills:
+        tid = str(f.get("tid") if f.get("tid") is not None else f.get("hash", ""))
+        if not tid:
+            continue
+        store.record_fill_unique(
+            session_id, tid, int(f.get("time", 0) or 0) // 1000, f.get("coin"),
+            f.get("side", ""), f.get("dir", ""), float(f.get("px", 0) or 0),
+            float(f.get("sz", 0) or 0), float(f.get("fee", 0) or 0),
+            float(f.get("closedPnl", 0) or 0))
+    for fp in funding:
+        delta = fp.get("delta", {}) or {}
+        fkey = str(fp.get("hash") or f"{fp.get('time','')}-{delta.get('coin','')}")
+        store.record_funding_unique(
+            session_id, fkey, int(fp.get("time", 0) or 0) // 1000,
+            delta.get("coin", ""), float(delta.get("usdc", 0) or 0))
 
 
 def candles_to_models(raw: list[dict]) -> list[Candle]:
@@ -93,7 +114,7 @@ async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
             if engine.cfg is not None:
                 cache_holder["v"] = refresh_account_cache(
                     client, engine, cache_holder["v"],
-                    fetch_extras=(loop_count % ACCOUNT_EXTRAS_EVERY == 0))
+                    fetch_extras=(loop_count % ACCOUNT_EXTRAS_EVERY == 0), store=store)
         except Exception as e:  # red caída, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)
         await asyncio.sleep(TICK_SECONDS)

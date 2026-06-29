@@ -135,3 +135,52 @@ def test_state_includes_account_and_tape(tmp_path):
     r = client.get("/state")
     body = r.json()
     assert "account" in body and "positions" in body and "tape_recent" in body
+
+
+def _seed_two_sessions(tmp_path):
+    from hlbot.store import Store
+    store = Store(str(tmp_path / "tr.db")); store.init_schema()
+    s1 = store.create_session(["ETH"], 40.0, mode="testnet")
+    store.record_fill_unique(s1, "t1", 100, "ETH", "B", "Close Long", 3000, 0.004, 0.0015, 0.05)
+    store.record_pnl_snapshot(s1, 0.03)
+    s2 = store.create_session(["BTC"], 50.0, mode="mainnet")
+    store.record_fill_unique(s2, "t2", 200, "BTC", "A", "Close Short", 67000, 0.0002, 0.001, -0.04)
+    store.record_pnl_snapshot(s2, -0.05)
+    return store, s1, s2
+
+def _api_with_store(store):
+    from hlbot.api import create_app
+    from hlbot.session_engine import SessionEngine
+    from test_session_engine import FakeClient
+    engine = SessionEngine(FakeClient(), store)
+    return TestClient(create_app(engine, TOKEN, lambda: {}, lambda: {}))
+
+def test_session_detail_404(tmp_path):
+    store, _, _ = _seed_two_sessions(tmp_path)
+    client = _api_with_store(store)
+    assert client.get("/sessions/99999").status_code == 404
+
+def test_sessions_list_filter_by_mode(tmp_path):
+    store, s1, s2 = _seed_two_sessions(tmp_path)
+    client = _api_with_store(store)
+    alls = client.get("/sessions").json()
+    assert {s["id"] for s in alls} == {s1, s2}
+    testnet = client.get("/sessions?mode=testnet").json()
+    assert [s["id"] for s in testnet] == [s1]
+    assert testnet[0]["realized_pnl"] == 0.05
+
+def test_session_detail(tmp_path):
+    store, s1, _ = _seed_two_sessions(tmp_path)
+    client = _api_with_store(store)
+    body = client.get(f"/sessions/{s1}").json()
+    assert body["summary"]["id"] == s1
+    assert len(body["trades"]) == 1 and body["trades"][0]["closed_pnl"] == 0.05
+    assert "equity_curve" in body and "decisions" in body
+
+def test_stats_global_separates_modes(tmp_path):
+    store, _, _ = _seed_two_sessions(tmp_path)
+    client = _api_with_store(store)
+    g = client.get("/stats/global").json()
+    assert g["testnet"]["n_sessions"] == 1 and g["mainnet"]["n_sessions"] == 1
+    assert abs(g["testnet"]["realized_pnl"] - 0.05) < 1e-9
+    assert abs(g["mainnet"]["realized_pnl"] - (-0.04)) < 1e-9

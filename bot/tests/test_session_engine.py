@@ -28,7 +28,7 @@ class FakeClient:
 
 class FakeStore:
     def __init__(self): self.decisions = []; self.sid = 1
-    def create_session(self, watchlist, capital): return self.sid
+    def create_session(self, watchlist, capital, mode="testnet"): return self.sid
     def end_session(self, sid): pass
     def record_decision(self, sid, coin, action, reason): self.decisions.append((coin, action, reason))
     def record_risk_event(self, sid, kind, detail): pass
