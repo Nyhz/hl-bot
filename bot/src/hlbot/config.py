@@ -19,8 +19,14 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        import os.path
+        mode_file = os.path.expanduser("~/.hlbot/mode")
+        testnet = os.getenv("HL_TESTNET", "true").lower() != "false"
+        if os.path.exists(mode_file):
+            with open(mode_file) as f:
+                testnet = f.read().strip() != "prod"   # prod=mainnet, cualquier otro=testnet
         return cls(
-            testnet=os.getenv("HL_TESTNET", "true").lower() != "false",
+            testnet=testnet,
             account_address=os.getenv("HL_ACCOUNT_ADDRESS") or None,
             secret_key=os.getenv("HL_SECRET_KEY") or None,
             control_token=os.getenv("CONTROL_TOKEN", "change-me"),

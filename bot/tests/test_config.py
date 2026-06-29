@@ -18,3 +18,14 @@ def test_reads_credentials(monkeypatch):
     cfg = Config.from_env()
     assert cfg.account_address == "0xabc"
     assert cfg.control_token == "tok"
+
+def test_mode_file_prod_forces_mainnet(tmp_path, monkeypatch):
+    import os
+    home = tmp_path
+    (home / ".hlbot").mkdir()
+    (home / ".hlbot" / "mode").write_text("prod")
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(home / ".hlbot" / "mode")
+                        if p == "~/.hlbot/mode" else p)
+    monkeypatch.delenv("HL_TESTNET", raising=False)
+    cfg = Config.from_env()
+    assert cfg.testnet is False
