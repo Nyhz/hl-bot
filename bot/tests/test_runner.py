@@ -1,5 +1,6 @@
 from hlbot.main import candles_to_models, build_market_state, refresh_account_cache
 from hlbot.models import Candle
+from hlbot.store import Store
 
 RAW = [{"t": 1, "o": "10", "h": "12", "l": "9", "c": "11", "v": "100"},
        {"t": 2, "o": "11", "h": "13", "l": "10", "c": "12", "v": "120"}]
@@ -53,3 +54,33 @@ def test_refresh_account_cache_preserves_fills_without_extras():
     c2 = refresh_account_cache(_AcctClient(), _Eng(), c1, fetch_extras=False)
     assert c2["_fills"] == c1["_fills"]   # preservadas sin re-fetch
     assert c2["equity"] == 49.16
+
+
+def test_refresh_records_fills_dedup(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["BTC"], 40.0, mode="testnet")
+
+    class _Eng2:
+        session_start_value = 50.0
+        session_started_at = 0
+        session_id = sid
+        class cfg:
+            class limits:
+                max_open_positions = 4
+
+    class _Client2:
+        def user_state(self):
+            return {"marginSummary": {"accountValue": "49"}, "assetPositions": []}
+        def user_fills(self):
+            return [{"tid": 7, "time": 1000, "coin": "BTC", "side": "B",
+                     "dir": "Close Long", "px": "67550", "sz": "0.0002",
+                     "fee": "0.0015", "closedPnl": "0.02"}]
+        def user_funding(self, start_ms):
+            return [{"time": 1000, "hash": "h1", "delta": {"usdc": "-0.001", "coin": "BTC"}}]
+
+    c = _Client2()
+    refresh_account_cache(c, _Eng2(), {}, fetch_extras=True, store=store)
+    refresh_account_cache(c, _Eng2(), {}, fetch_extras=True, store=store)  # 2ª vez: dedup
+    assert len(store.get_fills(sid)) == 1
+    assert store.get_fills(sid)[0]["closed_pnl"] == 0.02
+    assert len(store.get_funding(sid)) == 1
