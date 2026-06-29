@@ -20,9 +20,9 @@ RUNNING=false; [ -n "$PID" ] && RUNNING=true
 HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "http://localhost:${PORT}/state" 2>/dev/null)"
 HEALTHY=false; { [ "$HTTP_CODE" -ge 200 ] 2>/dev/null && [ "$HTTP_CODE" -lt 500 ] 2>/dev/null; } && HEALTHY=true
 
-# Estado -> glifo + color (mainnet en ámbar para que cante)
+# Estado -> glifo + color: naranja=testnet, verde=mainnet; rojo=parado
 if $RUNNING && $HEALTHY; then
-  if [ "$MODE" = "prod" ]; then echo "● HL | color=#ffaa00 size=13"; else echo "● HL | color=#00ff00 size=13"; fi
+  if [ "$MODE" = "prod" ]; then echo "● HL | color=#00ff00 size=13"; else echo "● HL | color=#ffaa00 size=13"; fi
 elif $RUNNING; then echo "● HL | color=#ffaa00 size=13"
 else echo "○ HL | color=#ff4444 size=13"; fi
 
