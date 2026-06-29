@@ -234,15 +234,19 @@ class SessionEngine:
                 trend = self.trends[coin]
                 trending = trend.is_trending(ms)
                 active = trend if trending else grid
+                conds = active.conditions(ms)
                 coins[coin] = {
                     "mid": ms.mid,
                     "mode": "trend" if trending else "grid",
                     "triggers": [to_dict(t) for t in active.armed_triggers(ms)],
-                    "conditions": [to_dict(c) for c in active.conditions(ms)],
+                    "conditions": [to_dict(c) for c in conds],
+                    "armed": all(c.met for c in conds) if conds else False,
                 }
+        testnet = getattr(getattr(self.client, "cfg", None), "testnet", True)
         return {
             "state": self.state.value,
             "paused": self.paused,
+            "mode": "testnet" if testnet else "mainnet",
             "watchlist": self.cfg.watchlist if self.cfg else [],
             "coins": coins,
         }

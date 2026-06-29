@@ -237,6 +237,14 @@ def test_trend_no_double_entry_before_fill_visible():
     opens = [o for o in client.orders if o[5] is False]
     assert len(opens) == 1               # NO reabre pese a no estar confirmada
 
+def test_snapshot_has_armed_and_mode():
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg())
+    snap = eng.snapshot(_flat_ms())
+    assert snap["mode"] in ("testnet", "mainnet")
+    assert "armed" in snap["coins"]["ETH"]
+
+
 def test_trend_reentry_after_external_close():
     from hlbot.models import Decision, ActionType, Side
     client = FakeClient()

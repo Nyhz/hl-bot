@@ -46,9 +46,20 @@ def create_app(engine: SessionEngine, control_token: str,
         if token is None or not hmac.compare_digest(token, control_token):
             raise HTTPException(status_code=401, detail="token de control invalido")
 
+    def _full_snapshot():
+        snap = engine.snapshot(market_state_provider())
+        acc = dict(account_provider())
+        fills = acc.pop("_fills", [])
+        acc.pop("_funding", None)
+        decisions = engine.store.get_decisions(engine.session_id) if engine.session_id else []
+        snap["account"] = acc
+        snap["positions"] = acc.get("positions", [])
+        snap["tape_recent"] = merge_tape(decisions, fills, limit=20)
+        return snap
+
     @app.get("/state")
     def state():
-        return engine.snapshot(market_state_provider())
+        return _full_snapshot()
 
     @app.get("/history")
     def history():
@@ -103,7 +114,7 @@ def create_app(engine: SessionEngine, control_token: str,
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(engine.snapshot(market_state_provider()))
+                await websocket.send_json(_full_snapshot())
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return

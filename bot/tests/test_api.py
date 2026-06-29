@@ -129,3 +129,9 @@ def test_coins_endpoint(tmp_path):
     r = client.get("/coins")
     names = [c["name"] for c in r.json()]
     assert "BTC" in names and "ETH" in names and "SOL" in names
+
+def test_state_includes_account_and_tape(tmp_path):
+    client, _ = _client_with_data(tmp_path)
+    r = client.get("/state")
+    body = r.json()
+    assert "account" in body and "positions" in body and "tape_recent" in body
