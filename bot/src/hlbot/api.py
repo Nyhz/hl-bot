@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from hlbot.models import SessionConfig, RiskLimits
 from hlbot.session_engine import SessionEngine
 from hlbot.account import merge_tape, format_candles
+from hlbot.track_record import session_summary, global_stats
 
 LIQUID_MAJORS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
 
@@ -150,5 +151,35 @@ def create_app(engine: SessionEngine, control_token: str,
     def coins():
         sz = getattr(engine.client, "sz_decimals", {})
         return [{"name": c, "szDecimals": sz[c]} for c in LIQUID_MAJORS if c in sz]
+
+    def _summary_for(session_row: dict) -> dict:
+        sid = session_row["id"]
+        return session_summary(
+            session_row,
+            engine.store.get_fills(sid),
+            engine.store.get_funding(sid),
+            engine.store.get_pnl_snapshots(sid),
+        )
+
+    @app.get("/sessions")
+    def sessions(mode: str | None = None):
+        return [_summary_for(s) for s in engine.store.list_sessions(mode)]
+
+    @app.get("/sessions/{session_id}")
+    def session_detail(session_id: int):
+        s = engine.store.get_session(session_id)
+        if s is None:
+            raise HTTPException(status_code=404, detail="sesion no encontrada")
+        return {
+            "summary": _summary_for(s),
+            "trades": engine.store.get_fills(session_id),
+            "equity_curve": engine.store.get_pnl_snapshots(session_id),
+            "decisions": engine.store.get_decisions(session_id),
+        }
+
+    @app.get("/stats/global")
+    def stats_global():
+        summaries = [_summary_for(s) for s in engine.store.list_sessions()]
+        return global_stats(summaries)
 
     return app
