@@ -1,0 +1,129 @@
+from __future__ import annotations
+import sqlite3
+import time
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL,
+    watchlist TEXT NOT NULL,
+    capital REAL NOT NULL,
+    ended_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    coin TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    coin TEXT NOT NULL,
+    side TEXT NOT NULL,
+    price REAL NOT NULL,
+    size REAL NOT NULL,
+    fee REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pnl_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    total_pnl REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS funding_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    coin TEXT NOT NULL,
+    amount REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS market_candles (
+    coin TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    t INTEGER NOT NULL,
+    open REAL, high REAL, low REAL, close REAL, volume REAL,
+    PRIMARY KEY (coin, interval, t)
+);
+CREATE TABLE IF NOT EXISTS risk_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL
+);
+"""
+
+
+class Store:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def init_schema(self) -> None:
+        with self._conn() as conn:
+            conn.executescript(SCHEMA)
+
+    def create_session(self, watchlist: list[str], capital: float) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO sessions (started_at, watchlist, capital) VALUES (?, ?, ?)",
+                (int(time.time()), ",".join(watchlist), capital),
+            )
+            return int(cur.lastrowid)
+
+    def end_session(self, session_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE sessions SET ended_at=? WHERE id=?",
+                         (int(time.time()), session_id))
+
+    def record_decision(self, session_id: int, coin: str, action: str, reason: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO decisions (session_id, ts, coin, action, reason) VALUES (?, ?, ?, ?, ?)",
+                (session_id, int(time.time()), coin, action, reason),
+            )
+
+    def record_fill(self, session_id: int, coin: str, side: str,
+                    price: float, size: float, fee: float) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO fills (session_id, ts, coin, side, price, size, fee) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, int(time.time()), coin, side, price, size, fee),
+            )
+
+    def record_pnl_snapshot(self, session_id: int, total_pnl: float) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO pnl_snapshots (session_id, ts, total_pnl) VALUES (?, ?, ?)",
+                (session_id, int(time.time()), total_pnl),
+            )
+
+    def record_risk_event(self, session_id: int, kind: str, detail: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO risk_events (session_id, ts, kind, detail) VALUES (?, ?, ?, ?)",
+                (session_id, int(time.time()), kind, detail),
+            )
+
+    def get_decisions(self, session_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM decisions WHERE session_id=? ORDER BY id", (session_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_fills(self, session_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM fills WHERE session_id=? ORDER BY id", (session_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
