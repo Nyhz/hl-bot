@@ -99,8 +99,12 @@ class SessionEngine:
                     return
             if d.side is None:
                 raise ValueError("PLACE_LIMIT requiere side")
-            self.client.place_limit(coin, d.side == Side.BUY, d.price, d.size,
-                                    post_only=True, reduce_only=d.reduce_only)
+            try:
+                self.client.place_limit(coin, d.side == Side.BUY, d.price, d.size,
+                                        post_only=True, reduce_only=d.reduce_only)
+            except ValueError as e:
+                self.store.record_risk_event(self.session_id, "orden_rechazada", str(e))
+                return
             if self.state != SessionState.CLOSING:
                 self.state = SessionState.ACTIVE
         elif d.action == ActionType.PLACE_MARKET:
@@ -113,8 +117,12 @@ class SessionEngine:
                     return
             if d.side is None:
                 raise ValueError("PLACE_MARKET requiere side")
-            self.client.place_limit(coin, d.side == Side.BUY, ms.mid, d.size,
-                                    post_only=False, reduce_only=d.reduce_only)
+            try:
+                self.client.place_limit(coin, d.side == Side.BUY, ms.mid, d.size,
+                                        post_only=False, reduce_only=d.reduce_only)
+            except ValueError as e:
+                self.store.record_risk_event(self.session_id, "orden_rechazada", str(e))
+                return
             if self.state != SessionState.CLOSING:
                 self.state = SessionState.ACTIVE
         elif d.action == ActionType.CLOSE:

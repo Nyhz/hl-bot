@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hmac
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from hlbot.models import SessionConfig, RiskLimits
@@ -32,7 +33,7 @@ def create_app(engine: SessionEngine, control_token: str,
     app = FastAPI(title="hlbot")
 
     def _auth(token: str | None):
-        if token != control_token:
+        if token is None or not hmac.compare_digest(token, control_token):
             raise HTTPException(status_code=401, detail="token de control invalido")
 
     @app.get("/state")

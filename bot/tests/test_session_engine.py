@@ -12,7 +12,7 @@ class FakeClient:
     def mid(self, coin): return self._mid[coin]
     def user_state(self): return {"assetPositions": [], "marginSummary": {"accountValue": "40"}}
     def place_limit(self, coin, is_buy, price, size, post_only=True, reduce_only=False):
-        self.orders.append((coin, is_buy, price, size, reduce_only)); return {"status": "ok"}
+        self.orders.append((coin, is_buy, price, size, reduce_only, post_only)); return {"status": "ok"}
     def market_close(self, coin): self.closed.append(coin); return {"status": "ok"}
     def cancel_all(self, coin): pass
 
@@ -81,6 +81,15 @@ def test_snapshot_exposes_triggers_and_conditions():
     assert "ETH" in snap["coins"]
     assert "triggers" in snap["coins"]["ETH"]
     assert "conditions" in snap["coins"]["ETH"]
+
+def test_grid_orders_are_maker_post_only():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())
+    assert client.orders
+    assert all(o[5] is True for o in client.orders)  # post_only -> maker (TIF Alo)
+
 
 def test_closing_reduce_only_bypasses_risk_and_keeps_closing():
     from hlbot.models import Decision, ActionType, Side, RiskLimits, SessionConfig
