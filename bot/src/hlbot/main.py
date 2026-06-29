@@ -10,12 +10,38 @@ from hlbot.store import Store
 from hlbot.session_engine import SessionEngine
 from hlbot.api import create_app
 from hlbot.models import MarketState, Candle
+from hlbot.account import compose_account
 
 CANDLE_INTERVAL = "1m"
 CANDLE_LOOKBACK_MS = 1000 * 60 * 120   # 120 minutos de velas 1m
 TICK_SECONDS = 5
 PNL_SNAPSHOT_EVERY = 12                 # ~cada minuto a 5s/tick
+ACCOUNT_EXTRAS_EVERY = 6               # cada cuántos ticks refrescar fills/funding (más pesados)
 API_PORT = 3300
+
+
+def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool) -> dict:
+    try:
+        ch = client.user_state()
+    except Exception as e:
+        print(f"[account_cache] user_state error: {e}", flush=True)
+        return prev
+    session_start_ms = int((engine.session_started_at or 0) * 1000)
+    fills = prev.get("_fills", [])
+    funding_total = prev.get("_funding", 0.0)
+    if fetch_extras:
+        try:
+            all_fills = client.user_fills()
+            fills = [f for f in all_fills if int(f.get("time", 0) or 0) >= session_start_ms]
+            funding = client.user_funding(session_start_ms)
+            funding_total = sum(float(f.get("delta", {}).get("usdc", 0) or 0) for f in funding)
+        except Exception as e:
+            print(f"[account_cache] extras error: {e}", flush=True)
+    max_open = engine.cfg.limits.max_open_positions if engine.cfg else 0
+    acc = compose_account(ch, fills, funding_total, engine.session_start_value, max_open)
+    acc["_fills"] = fills
+    acc["_funding"] = funding_total
+    return acc
 
 
 def candles_to_models(raw: list[dict]) -> list[Candle]:
@@ -45,10 +71,12 @@ def persist_candles(store: Store, coin: str, raw: list[dict]) -> None:
 
 
 async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
-                      shared: dict[str, MarketState]) -> None:
+                      shared: dict[str, MarketState], cache_holder: dict) -> None:
     ticks = 0
+    loop_count = 0
     while True:
         try:
+            loop_count += 1
             coins = engine.cfg.watchlist if engine.cfg else []
             now_ms = int(time.time() * 1000)
             states: dict[str, MarketState] = {}
@@ -62,6 +90,10 @@ async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
                 ticks += 1
                 if ticks % PNL_SNAPSHOT_EVERY == 0 and engine.session_id is not None:
                     store.record_pnl_snapshot(engine.session_id, engine._account_value())
+            if engine.cfg is not None:
+                cache_holder["v"] = refresh_account_cache(
+                    client, engine, cache_holder["v"],
+                    fetch_extras=(loop_count % ACCOUNT_EXTRAS_EVERY == 0))
         except Exception as e:  # red caída, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)
         await asyncio.sleep(TICK_SECONDS)
@@ -74,12 +106,13 @@ def main() -> None:
     store.init_schema()
     engine = SessionEngine(client, store)
     shared: dict[str, MarketState] = {}
+    cache_holder: dict = {"v": {}}
 
-    app = create_app(engine, cfg.control_token, lambda: shared)
+    app = create_app(engine, cfg.control_token, lambda: shared, lambda: cache_holder["v"])
 
     @app.on_event("startup")
     async def _start_loop():
-        asyncio.create_task(_trade_loop(engine, client, store, shared))
+        asyncio.create_task(_trade_loop(engine, client, store, shared, cache_holder))
 
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, log_level="info")
 

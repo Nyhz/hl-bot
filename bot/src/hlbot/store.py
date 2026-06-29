@@ -127,3 +127,18 @@ class Store:
                 "SELECT * FROM fills WHERE session_id=? ORDER BY id", (session_id,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_pnl_snapshots(self, session_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, total_pnl FROM pnl_snapshots WHERE session_id=? ORDER BY id",
+                (session_id,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_candles(self, coin: str, interval: str, limit: int = 500) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT t, open, high, low, close, volume FROM market_candles "
+                "WHERE coin=? AND interval=? ORDER BY t DESC LIMIT ?",
+                (coin, interval, limit)).fetchall()
+            return [dict(r) for r in reversed(rows)]  # ascendente por t

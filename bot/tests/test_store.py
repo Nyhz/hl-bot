@@ -24,3 +24,25 @@ def test_record_and_get_fill(tmp_path):
     rows = store.get_fills(sid)
     assert len(rows) == 1
     assert rows[0]["price"] == 3000.0
+
+def test_get_pnl_snapshots(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0)
+    store.record_pnl_snapshot(sid, -0.10)
+    store.record_pnl_snapshot(sid, 0.25)
+    rows = store.get_pnl_snapshots(sid)
+    assert [r["total_pnl"] for r in rows] == [-0.10, 0.25]
+    assert "ts" in rows[0]
+
+def test_get_candles(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    with store._conn() as conn:
+        for t in (3, 1, 2):  # desordenados a propósito
+            conn.execute(
+                "INSERT OR REPLACE INTO market_candles "
+                "(coin, interval, t, open, high, low, close, volume) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("ETH", "1m", t, 10.0, 11.0, 9.0, 10.5, 1.0))
+    rows = store.get_candles("ETH", "1m", limit=10)
+    assert [r["t"] for r in rows] == [1, 2, 3]  # ascendente
+    assert rows[0]["close"] == 10.5
