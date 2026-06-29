@@ -26,3 +26,9 @@ def test_user_state_returns_account():
 def test_open_orders_returns_list():
     client = HLClient(Config.from_env())
     assert isinstance(client.open_orders("ETH"), list)
+
+
+def test_user_fills_and_funding_return_lists():
+    client = HLClient(Config.from_env())
+    assert isinstance(client.user_fills(), list)
+    assert isinstance(client.user_funding(0), list)

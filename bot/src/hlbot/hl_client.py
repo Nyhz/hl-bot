@@ -100,3 +100,9 @@ class HLClient:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
         return self.exchange.order(coin, is_buy, sz, limit, stop_order_type(trig),
                                    reduce_only=reduce_only)
+
+    def user_fills(self) -> list[dict]:
+        return self.info.user_fills(self.address)
+
+    def user_funding(self, start_ms: int) -> list[dict]:
+        return self.info.user_funding_history(self.address, start_ms)
