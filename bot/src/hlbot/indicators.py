@@ -1,4 +1,5 @@
 from __future__ import annotations
+import numpy as np
 import pandas as pd
 
 
@@ -32,7 +33,7 @@ def adx(high, low, close, period: int = 14) -> list[float]:
     atr_ = tr.ewm(alpha=1 / period, adjust=False).mean()
     plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_
     minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr_
-    denom = (plus_di + minus_di).replace(0, pd.NA)
+    denom = (plus_di + minus_di).replace(0, np.nan)
     dx = 100 * (plus_di - minus_di).abs() / denom
     adx_ = dx.ewm(alpha=1 / period, adjust=False).mean()
     return adx_.fillna(0.0).tolist()
