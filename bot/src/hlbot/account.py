@@ -26,7 +26,7 @@ def summarize_positions(clearinghouse_state: dict) -> list[dict]:
 def compose_account(clearinghouse_state: dict, fills: list[dict], funding_total: float,
                     session_start_value: float, max_open: int) -> dict:
     positions = summarize_positions(clearinghouse_state)
-    equity = float(clearinghouse_state.get("marginSummary", {}).get("accountValue", 0) or 0)
+    equity = float((clearinghouse_state.get("marginSummary") or {}).get("accountValue", 0) or 0)
     unrealized = sum(p["unrealized_pnl"] for p in positions)
     closes = [f for f in fills if "Close" in (f.get("dir") or "")]
     realized = sum(float(f.get("closedPnl", 0) or 0) for f in closes)
@@ -76,9 +76,9 @@ def merge_tape(decisions: list[dict], fills: list[dict], limit: int = 50) -> lis
 
 def format_candles(raw: list[dict]) -> list[dict]:
     out = [{
-        "time": int(c["t"]) // 1000,
-        "open": float(c["o"]), "high": float(c["h"]),
-        "low": float(c["l"]), "close": float(c["c"]),
+        "time": int(c.get("t", 0) or 0) // 1000,
+        "open": float(c.get("o", 0) or 0), "high": float(c.get("h", 0) or 0),
+        "low": float(c.get("l", 0) or 0), "close": float(c.get("c", 0) or 0),
     } for c in raw]
     out.sort(key=lambda c: c["time"])
     return out

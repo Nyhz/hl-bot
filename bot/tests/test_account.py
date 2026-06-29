@@ -56,3 +56,14 @@ def test_format_candles_to_seconds_ascending():
     out = format_candles(raw)
     assert out[0] == {"time": 60, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0}
     assert out[1]["time"] == 120
+
+def test_summarize_positions_skips_zero_szi():
+    ch = {"marginSummary": {"accountValue": "10"},
+          "assetPositions": [
+              {"position": {"coin": "BTC", "szi": "0", "entryPx": "1", "positionValue": "0",
+                            "unrealizedPnl": "0", "leverage": {"value": 1}, "liquidationPx": None}},
+              {"position": {"coin": "ETH", "szi": "0.5", "entryPx": "3000", "positionValue": "10",
+                            "unrealizedPnl": "0.1", "leverage": {"value": 2}, "liquidationPx": "2000"}},
+          ]}
+    pos = summarize_positions(ch)
+    assert [p["coin"] for p in pos] == ["ETH"]  # BTC con szi=0 se omite
