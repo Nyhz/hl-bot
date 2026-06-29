@@ -62,3 +62,12 @@ def test_close_requires_token():
     client, _ = _client()
     r = client.post("/session/close")
     assert r.status_code == 401
+
+def test_launch_unaffordable_grid_returns_422():
+    client, _ = _client()
+    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 10,
+            "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
+                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
+                       "total_loss_limit": 20.0}}
+    r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    assert r.status_code == 422
