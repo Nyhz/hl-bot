@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field as dc_field
 from hlbot.models import (
     SessionState, Side, ActionType, Candle, MarketState,
     Trigger, Condition, Decision, RiskLimits, SessionConfig, to_dict,
@@ -22,3 +23,14 @@ def test_session_config_defaults():
     assert cfg.grid_n == 10
     assert cfg.ema_fast == 9 and cfg.ema_slow == 21
     assert cfg.adx_threshold == 25.0
+
+def test_to_dict_converts_enums_in_nested_lists():
+    @dataclass
+    class _Wrap:
+        triggers: list
+
+    w = _Wrap(triggers=[Trigger(coin="ETH", level=3000.0, side=Side.BUY,
+                                 action="place_limit", description="x")])
+    d = to_dict(w)
+    assert d["triggers"][0]["side"] == "buy"  # enum -> str inside a nested list
+    assert isinstance(d["triggers"][0]["side"], str)

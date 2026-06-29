@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict, is_dataclass
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 
@@ -105,8 +105,8 @@ class Position:
 def _convert(value):
     if isinstance(value, Enum):
         return value.value
-    if is_dataclass(value):
-        return to_dict(value)
+    if isinstance(value, dict):          # asdict already flattened dataclasses to dicts
+        return {k: _convert(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_convert(v) for v in value]
     return value
