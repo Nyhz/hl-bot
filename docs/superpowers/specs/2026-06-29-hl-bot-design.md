@@ -16,6 +16,11 @@ Y"), las condiciones de cada estrategia, posiciones, PnL, fees, funding e histor
 
 **Expectativa honesta de PnL:** aproximadamente cero menos fees. Se asume y se abraza como hobby.
 
+**Prioridad del proyecto:** el entregable más importante es **el aspecto visual y poder ver las
+estrategias y planes del bot en vivo** (triggers, condiciones y decisiones dibujados en directo).
+El afinado del funcionamiento del bot (parámetros, edge cases) se pule después en testnet y con el
+backtester. Por eso el orden de construcción prioriza el dashboard sobre el backtester (ver §5).
+
 ## 2. Decisiones tomadas (locked)
 
 | Tema | Decisión |
@@ -102,15 +107,19 @@ desde el día 1 (tabla `market_candles`); opcionalmente el archivo S3 `hyperliqu
 ## 5. Decomposición en sub-proyectos
 
 El sistema es grande para un solo spec. Se divide en **3 sub-proyectos**, cada uno con su propio
-ciclo spec → plan → implementación, en este orden:
+ciclo spec → plan → implementación. El orden **prioriza el aspecto visual en vivo** (ver §1
+"Prioridad del proyecto"): el dashboard va antes que el backtester.
 
 1. **Núcleo del bot + API** (este spec lo detalla) — SDK, motor de sesiones, estrategias, SQLite
-   y FastAPI+WS. Validado en testnet.
-2. **Backtester** — corre las estrategias sobre histórico modelando fees + funding horario; usado
-   para afinar parámetros antes de mainnet.
-3. **Dashboard** — frontend Next.js con todas las vistas visuales.
+   y FastAPI+WS. Validado en testnet. Objetivo explícito: **producir datos reales de
+   triggers/condiciones/decisiones/posiciones en testnet** que el dashboard pueda visualizar.
+2. **Dashboard** — frontend Next.js con todas las vistas visuales; el entregable prioritario.
+3. **Backtester** — corre las estrategias sobre histórico modelando fees + funding horario; usado
+   para afinar parámetros antes de mainnet. Va al final (afinado fino).
 
 Dependencias: dashboard → API → núcleo; el backtester reusa la interfaz `Strategy` del núcleo.
+El núcleo (sub-proyecto 1) no necesita estrategias perfectamente afinadas — solo lo suficiente
+para emitir triggers/condiciones reales en testnet; el afinado llega con el backtester.
 
 ---
 
@@ -213,14 +222,7 @@ historial de sesiones y trades, triggers armados por par, condiciones en vivo, l
 
 ---
 
-# Sub-proyecto 2 — Backtester (esbozo)
-
-Corre las estrategias (misma interfaz `Strategy`) sobre velas históricas (grabadas + paginadas
-vía `candleSnapshot`), **modelando fees maker + funding horario + supuesto de ejecución maker**.
-Validación walk-forward (optimizar en una ventana, testear en la siguiente). Se usa para afinar
-parámetros antes de pasar a mainnet. Spec propio cuando llegue su turno.
-
-# Sub-proyecto 3 — Dashboard (esbozo)
+# Sub-proyecto 2 — Dashboard (esbozo)
 
 Next.js + React + TS. Lightweight-Charts para gráficos financieros en vivo, Framer Motion para
 animaciones, sonner para toasts (+ sonido) al abrir/cerrar posición. Vistas:
@@ -234,3 +236,11 @@ animaciones, sonner para toasts (+ sonido) al abrir/cerrar posición. Vistas:
 - **Backtests**: lanzar y visualizar resultados.
 
 Consume exclusivamente la API del bot (REST + WebSocket). Spec propio cuando llegue su turno.
+
+# Sub-proyecto 3 — Backtester (esbozo)
+
+Corre las estrategias (misma interfaz `Strategy`) sobre velas históricas (grabadas + paginadas
+vía `candleSnapshot`), **modelando fees maker + funding horario + supuesto de ejecución maker**.
+Validación walk-forward (optimizar en una ventana, testear en la siguiente). Se usa para afinar
+parámetros antes de pasar a mainnet. Va al final del plan (afinado fino). Spec propio cuando
+llegue su turno.
