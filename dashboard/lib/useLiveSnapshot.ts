@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { Snapshot } from "./types";
+import { normalizeSnapshot } from "./snapshot";
 
 export function useLiveSnapshot(): { snapshot: Snapshot | null; connected: boolean } {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -15,12 +16,12 @@ export function useLiveSnapshot(): { snapshot: Snapshot | null; connected: boole
     const connect = () => {
       const ws = new WebSocket(url);
       wsRef.current = ws;
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => { if (!closed) setConnected(true); };
       ws.onmessage = (e) => {
-        try { setSnapshot(JSON.parse(e.data) as Snapshot); } catch {}
+        try { if (!closed) setSnapshot(normalizeSnapshot(JSON.parse(e.data))); } catch {}
       };
       ws.onclose = () => {
-        setConnected(false);
+        if (!closed) setConnected(false);
         if (!closed) retry = setTimeout(connect, 2000); // backoff simple
       };
       ws.onerror = () => ws.close();

@@ -9,7 +9,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ action: st
   const base = process.env.BOT_API_URL ?? "http://localhost:3300";
   const token = process.env.CONTROL_TOKEN ?? "";
   const body = await req.text();
-  const res = await fetch(`${base}/session/${action === "limits" ? "" : ""}${action}`.replace("/session/limits", "/limits"), {
+  const path = action === "limits" ? "/limits" : `/session/${action}`;
+  const res = await fetch(`${base}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Control-Token": token },
     body: body || "{}",
