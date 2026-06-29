@@ -13,7 +13,7 @@ MODE="dev"; [ -f "$MODE_FILE" ] && MODE="$(cat "$MODE_FILE" 2>/dev/null)"
 [ "$MODE" = "prod" ] && NET="MAINNET" || NET="TESTNET"
 
 # Servicio
-PID="$(launchctl print "${GUI_DOMAIN}/${LABEL}" 2>/dev/null | awk '/pid =/{print $3; exit}')"
+PID="$(launchctl print "${GUI_DOMAIN}/${LABEL}" 2>/dev/null | awk '/pid =/ && $3 ~ /^[0-9]+$/ {print $3; exit}')"
 RUNNING=false; [ -n "$PID" ] && RUNNING=true
 
 # Health HTTP
@@ -42,7 +42,14 @@ if [ -f "$DB_FILE" ]; then
     PNL="$(sqlite3 -readonly "$DB_FILE" "SELECT printf('%.2f', total_pnl) FROM pnl_snapshots WHERE session_id=$SID ORDER BY id DESC LIMIT 1;" 2>/dev/null)"
     echo "Sesión #$SID | color=white"
     echo "Fills: ${NFILLS:-0} | color=#888888"
-    echo "PnL: ${PNL:-n/d} | color=$([ -n "$PNL" ] && echo '#888888' || echo '#888888')"
+    PNL_COLOR="#888888"
+    if [ -n "$PNL" ]; then
+      case "$(echo "$PNL" | cut -c1)" in
+        -) PNL_COLOR="#ff4444" ;;
+        *) PNL_COLOR="#00ff00" ;;
+      esac
+    fi
+    echo "PnL: ${PNL:-n/d} | color=$PNL_COLOR"
     echo "Fees: ${FEES:-0} | color=#888888"
   else
     echo "Sin sesiones aún | color=#888888"
