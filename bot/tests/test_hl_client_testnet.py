@@ -21,3 +21,8 @@ def test_user_state_returns_account():
     client = HLClient(Config.from_env())
     state = client.user_state()
     assert "marginSummary" in state
+
+
+def test_open_orders_returns_list():
+    client = HLClient(Config.from_env())
+    assert isinstance(client.open_orders("ETH"), list)

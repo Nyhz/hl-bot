@@ -25,3 +25,11 @@ def test_min_notional_above_threshold_is_true():
 
 def test_min_notional_below_threshold_is_false():
     assert meets_min_notional(3000.0, 0.003) is False  # 9.0 < 10
+
+
+def test_stop_order_type_is_market_sl():
+    from hlbot.hl_client import stop_order_type
+    ot = stop_order_type(2940.0)
+    assert ot["trigger"]["isMarket"] is True
+    assert ot["trigger"]["tpsl"] == "sl"
+    assert ot["trigger"]["triggerPx"] == 2940.0
