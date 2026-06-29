@@ -215,3 +215,47 @@ def test_trend_stop_placed_once_and_no_reentry():
     assert len(client.stops) == 1                 # no recoloca stop
     market_opens = [o for o in client.orders if o[5] is False]
     assert len(market_opens) == 1                 # no reabre tendencia
+
+
+def test_trend_no_double_entry_before_fill_visible():
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY,
+                             size=0.004, reason="t")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())                 # abre (posición aún no visible en user_state)
+    eng.tick(_flat_ms())                 # latencia de fill: sigue sin verse
+    opens = [o for o in client.orders if o[5] is False]
+    assert len(opens) == 1               # NO reabre pese a no estar confirmada
+
+def test_trend_reentry_after_external_close():
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY,
+                             size=0.004, reason="t")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())                                  # abre
+    client.positions = [{"position": {"coin": "ETH"}}]    # fill visible -> confirmada
+    eng.tick(_flat_ms())                                  # no reabre
+    client.positions = []                                 # stop ejecutado -> cerrada
+    eng.tick(_flat_ms())                                  # permite reentrada
+    opens = [o for o in client.orders if o[5] is False]
+    assert len(opens) == 2

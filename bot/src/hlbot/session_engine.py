@@ -23,6 +23,7 @@ class SessionEngine:
         self.day_anchor_date = None
         self.trend_open: set[str] = set()
         self.stops_placed: set[str] = set()
+        self.trend_confirmed: set[str] = set()
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
@@ -46,6 +47,7 @@ class SessionEngine:
         self.day_anchor_date = self._today_local()
         self.trend_open = set()
         self.stops_placed = set()
+        self.trend_confirmed = set()
         self.paused = False
         self.state = SessionState.SCANNING
 
@@ -80,6 +82,7 @@ class SessionEngine:
         self.day_anchor_date = None
         self.trend_open = set()
         self.stops_placed = set()
+        self.trend_confirmed = set()
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
@@ -88,11 +91,11 @@ class SessionEngine:
             return trend.evaluate(ms)  # tendencia: pausa el grid de este par
         return grid.evaluate(ms)
 
-    def _resting_prices(self, coin: str) -> list[float]:
+    def _resting_prices(self, coin: str) -> list[float] | None:
         try:
             return [float(o["limitPx"]) for o in self.client.open_orders(coin)]
         except Exception:
-            return []
+            return None
 
     def _has_resting_near(self, d, resting: list[float], ms: MarketState) -> bool:
         if d.price is None or not resting:
@@ -144,12 +147,20 @@ class SessionEngine:
         self._check_loss_limits()
         n_open = self._open_positions_count()
         open_coins = self._position_coins()
-        self.trend_open &= open_coins
-        self.stops_placed &= open_coins
+        # Confirmar posiciones de tendencia ya visibles; limpiar SOLO las que estaban
+        # confirmadas y han desaparecido (stop ejecutado) -> evita doble entrada por
+        # latencia de fill (la posición recién abierta aún no aparece en user_state).
+        self.trend_confirmed |= (self.trend_open & open_coins)
+        gone = self.trend_confirmed - open_coins
+        self.trend_open -= gone
+        self.stops_placed -= gone
+        self.trend_confirmed -= gone
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
             resting = self._resting_prices(coin)
+            if resting is None:
+                continue  # no pudimos leer ordenes en reposo: no operar este par este tick
             decisions = self._decisions_for(ms)
             for d in decisions:
                 if self.state == SessionState.CLOSING and not (
@@ -158,18 +169,13 @@ class SessionEngine:
                     continue
                 if d.action == ActionType.PLACE_LIMIT and self._has_resting_near(d, resting, ms):
                     continue
-                self._apply(coin, ms, d, n_open, len(resting))
+                self._apply(coin, ms, d, n_open)
         if self.state == SessionState.CLOSING and n_open == 0:
             self._reset()
 
-    def _apply(self, coin: str, ms: MarketState, d, n_open: int,
-               resting_count: int = 0) -> None:
+    def _apply(self, coin: str, ms: MarketState, d, n_open: int) -> None:
         if d.action == ActionType.PLACE_LIMIT:
             if not d.reduce_only:
-                if n_open + resting_count >= self.cfg.limits.max_open_positions:
-                    self.store.record_risk_event(self.session_id, "rechazo",
-                                                 "exposicion agregada maxima")
-                    return
                 notional = (d.price or 0) * (d.size or 0)
                 ok, reason = self.risk.can_open(notional, n_open,
                                                 self.cfg.limits.max_leverage)
@@ -190,10 +196,6 @@ class SessionEngine:
             if not d.reduce_only and coin in self.trend_open:
                 return
             if not d.reduce_only:
-                if n_open + resting_count >= self.cfg.limits.max_open_positions:
-                    self.store.record_risk_event(self.session_id, "rechazo",
-                                                 "exposicion agregada maxima")
-                    return
                 notional = ms.mid * (d.size or 0)
                 ok, reason = self.risk.can_open(notional, n_open,
                                                 self.cfg.limits.max_leverage)
@@ -215,10 +217,11 @@ class SessionEngine:
         elif d.action == ActionType.CLOSE:
             self.client.market_close(coin)
         elif d.action == ActionType.SET_STOP:
-            if coin not in self.stops_placed and d.side is not None and d.price is not None:
-                self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0,
-                                       reduce_only=True)
-                self.stops_placed.add(coin)
+            if coin in self.stops_placed or d.side is None or d.price is None:
+                return
+            self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0,
+                                   reduce_only=True)
+            self.stops_placed.add(coin)
         self.store.record_decision(self.session_id, coin, d.action.value, d.reason)
 
     def snapshot(self, market_states: dict[str, MarketState] | None = None) -> dict:
