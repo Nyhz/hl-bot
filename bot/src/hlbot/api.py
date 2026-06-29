@@ -29,7 +29,7 @@ class KillBody(BaseModel):
 
 
 def create_app(engine: SessionEngine, control_token: str,
-               market_state_provider) -> FastAPI:
+               market_state_provider, account_provider=lambda: {}) -> FastAPI:
     app = FastAPI(title="hlbot")
 
     def _auth(token: str | None):
