@@ -157,3 +157,23 @@ def test_daily_anchor_resets_on_new_local_day():
     client.account_value = "100"
     eng.tick(_flat_ms())
     assert eng.day_anchor_value == 100.0                 # re-anclado al nuevo día
+
+def test_launch_rejects_unaffordable_grid():
+    eng = SessionEngine(FakeClient(), FakeStore())
+    limits = RiskLimits(15.0, 3, 2.0, 5.0, 20.0)
+    cfg = SessionConfig(watchlist=["ETH"], capital=20.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)   # 4*10=40 > 20
+    with pytest.raises(ValueError):
+        eng.launch(cfg)
+
+def test_grid_skips_rungs_with_resting_order():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())                       # 1er tick coloca rungs
+    placed = [o[2] for o in client.orders]     # precios colocados
+    assert placed
+    client.resting = [{"limitPx": p} for p in placed]   # ahora en reposo (forma de open_orders)
+    client.orders.clear()
+    eng.tick(_flat_ms())                       # 2º tick: no debe duplicar
+    assert client.orders == []

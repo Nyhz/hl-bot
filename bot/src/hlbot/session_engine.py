@@ -25,6 +25,10 @@ class SessionEngine:
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
             raise RuntimeError(f"no se puede lanzar en estado {self.state}")
+        if cfg.grid_n * 10.0 > cfg.capital:
+            raise ValueError(
+                f"capital {cfg.capital} insuficiente para grid_n={cfg.grid_n} "
+                f"(necesita >= {cfg.grid_n * 10.0})")
         self.cfg = cfg
         self.risk = RiskManager(cfg.limits)
         self.session_id = self.store.create_session(cfg.watchlist, cfg.capital)
@@ -75,6 +79,19 @@ class SessionEngine:
             return trend.evaluate(ms)  # tendencia: pausa el grid de este par
         return grid.evaluate(ms)
 
+    def _resting_prices(self, coin: str) -> list[float]:
+        try:
+            return [float(o["limitPx"]) for o in self.client.open_orders(coin)]
+        except Exception:
+            return []
+
+    def _has_resting_near(self, d, resting: list[float], ms: MarketState) -> bool:
+        if d.price is None or not resting:
+            return False
+        step = (2 * self.cfg.grid_range_pct * ms.mid) / self.cfg.grid_n
+        tol = step / 2
+        return any(abs(r - d.price) <= tol for r in resting)
+
     def _open_positions_count(self) -> int:
         state = self.client.user_state()
         return len(state.get("assetPositions", []))
@@ -111,20 +128,27 @@ class SessionEngine:
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
+            resting = self._resting_prices(coin)
             decisions = self._decisions_for(ms)
             for d in decisions:
-                # En CLOSING solo se permiten reduce_only / cierres.
                 if self.state == SessionState.CLOSING and not (
                     d.reduce_only or d.action in (ActionType.CLOSE, ActionType.SET_STOP)
                 ):
                     continue
-                self._apply(coin, ms, d, n_open)
+                if d.action == ActionType.PLACE_LIMIT and self._has_resting_near(d, resting, ms):
+                    continue
+                self._apply(coin, ms, d, n_open, len(resting))
         if self.state == SessionState.CLOSING and n_open == 0:
             self._reset()
 
-    def _apply(self, coin: str, ms: MarketState, d, n_open: int) -> None:
+    def _apply(self, coin: str, ms: MarketState, d, n_open: int,
+               resting_count: int = 0) -> None:
         if d.action == ActionType.PLACE_LIMIT:
             if not d.reduce_only:
+                if n_open + resting_count >= self.cfg.limits.max_open_positions:
+                    self.store.record_risk_event(self.session_id, "rechazo",
+                                                 "exposicion agregada maxima")
+                    return
                 notional = (d.price or 0) * (d.size or 0)
                 ok, reason = self.risk.can_open(notional, n_open,
                                                 self.cfg.limits.max_leverage)
@@ -143,6 +167,10 @@ class SessionEngine:
                 self.state = SessionState.ACTIVE
         elif d.action == ActionType.PLACE_MARKET:
             if not d.reduce_only:
+                if n_open + resting_count >= self.cfg.limits.max_open_positions:
+                    self.store.record_risk_event(self.session_id, "rechazo",
+                                                 "exposicion agregada maxima")
+                    return
                 notional = ms.mid * (d.size or 0)
                 ok, reason = self.risk.can_open(notional, n_open,
                                                 self.cfg.limits.max_leverage)

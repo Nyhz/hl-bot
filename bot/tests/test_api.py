@@ -33,7 +33,7 @@ def test_launch_requires_token():
 
 def test_launch_with_token_moves_to_scanning():
     client, engine = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0,
+    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
             "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
                        "max_leverage": 2.0, "daily_loss_limit": 5.0,
                        "total_loss_limit": 20.0}}
@@ -43,7 +43,7 @@ def test_launch_with_token_moves_to_scanning():
 
 def test_kill_requires_confirm_flag():
     client, engine = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0,
+    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
             "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
                        "max_leverage": 2.0, "daily_loss_limit": 5.0,
                        "total_loss_limit": 20.0}}
