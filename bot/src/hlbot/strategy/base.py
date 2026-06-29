@@ -1,0 +1,9 @@
+from __future__ import annotations
+from typing import Protocol
+from hlbot.models import MarketState, Decision, Trigger, Condition
+
+
+class Strategy(Protocol):
+    def evaluate(self, ms: MarketState) -> list[Decision]: ...
+    def armed_triggers(self, ms: MarketState) -> list[Trigger]: ...
+    def conditions(self, ms: MarketState) -> list[Condition]: ...
