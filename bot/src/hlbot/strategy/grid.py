@@ -34,8 +34,12 @@ class GridStrategy:
         return out
 
     def conditions(self, ms: MarketState) -> list[Condition]:
-        in_range = self.lower is not None and self.lower <= ms.mid <= self.upper
-        return [Condition("precio_en_rango", ms.mid, self.upper or 0.0, bool(in_range))]
+        if self.lower is None or self.upper is None:
+            return []
+        return [
+            Condition("precio_sobre_limite_inferior", ms.mid, self.lower, ms.mid >= self.lower),
+            Condition("precio_bajo_limite_superior", ms.mid, self.upper, ms.mid <= self.upper),
+        ]
 
     def evaluate(self, ms: MarketState) -> list[Decision]:
         if self.lower is None or self.upper is None:
