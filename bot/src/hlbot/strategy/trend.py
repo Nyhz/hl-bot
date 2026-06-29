@@ -41,16 +41,21 @@ class TrendOverlayStrategy:
         if len(ms.candles) < self.cfg.ema_slow:
             return []
         ef, es, _, atr_ = self._signals(ms)
-        side = Side.SELL if ef >= es else Side.BUY
-        stop = ms.mid - self.cfg.atr_stop_mult * atr_ if ef >= es \
-            else ms.mid + self.cfg.atr_stop_mult * atr_
+        if ef > es:
+            side, stop = Side.SELL, ms.mid - self.cfg.atr_stop_mult * atr_
+        elif ef < es:
+            side, stop = Side.BUY, ms.mid + self.cfg.atr_stop_mult * atr_
+        else:
+            return []
         return [Trigger(ms.coin, stop, side, "set_stop",
                         f"trailing stop ATR en {stop:.4f}")]
 
     def evaluate(self, ms: MarketState) -> list[Decision]:
-        if not self.is_trending(ms):
+        if len(ms.candles) < self.cfg.ema_slow:
             return []
-        ef, es, _, atr_ = self._signals(ms)
+        ef, es, adx_, atr_ = self._signals(ms)
+        if adx_ <= self.cfg.adx_threshold:
+            return []
         if ef > es:
             stop = ms.mid - self.cfg.atr_stop_mult * atr_
             return [
