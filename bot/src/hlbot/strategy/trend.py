@@ -63,7 +63,7 @@ class TrendOverlayStrategy:
                          size=self._size(ms.mid),
                          reason="tendencia alcista (ADX>umbral, EMA fast>slow)"),
                 Decision(ms.coin, ActionType.SET_STOP, side=Side.SELL, price=stop,
-                         reduce_only=True, reason="trailing stop ATR"),
+                         size=self._size(ms.mid), reduce_only=True, reason="trailing stop ATR"),
             ]
         if ef < es:
             stop = ms.mid + self.cfg.atr_stop_mult * atr_
@@ -72,6 +72,6 @@ class TrendOverlayStrategy:
                          size=self._size(ms.mid),
                          reason="tendencia bajista (ADX>umbral, EMA fast<slow)"),
                 Decision(ms.coin, ActionType.SET_STOP, side=Side.BUY, price=stop,
-                         reduce_only=True, reason="trailing stop ATR"),
+                         size=self._size(ms.mid), reduce_only=True, reason="trailing stop ATR"),
             ]
         return []

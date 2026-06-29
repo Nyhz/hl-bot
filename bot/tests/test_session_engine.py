@@ -177,3 +177,41 @@ def test_grid_skips_rungs_with_resting_order():
     client.orders.clear()
     eng.tick(_flat_ms())                       # 2º tick: no debe duplicar
     assert client.orders == []
+
+
+def test_close_cancels_resting_orders():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.close()
+    assert "ETH" in client.canceled        # canceló reposo de la watchlist
+    assert client.closed == []             # NO liquidó posiciones a mercado
+
+
+def test_trend_stop_placed_once_and_no_reentry():
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH"}}]   # hay posición abierta tras abrir
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [
+                Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY, size=0.004, reason="t"),
+                Decision("ETH", ActionType.SET_STOP, side=Side.SELL, price=2940.0,
+                         size=0.004, reduce_only=True, reason="stop"),
+            ]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())
+    assert len(client.stops) == 1                 # stop colocado
+    market_opens = [o for o in client.orders if o[5] is False]  # post_only False = market
+    assert len(market_opens) == 1                 # abrió una vez
+    eng.tick(_flat_ms())
+    assert len(client.stops) == 1                 # no recoloca stop
+    market_opens = [o for o in client.orders if o[5] is False]
+    assert len(market_opens) == 1                 # no reabre tendencia
