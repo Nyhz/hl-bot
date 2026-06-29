@@ -1,10 +1,15 @@
 from __future__ import annotations
 import asyncio
 import hmac
+import os
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from hlbot.models import SessionConfig, RiskLimits
 from hlbot.session_engine import SessionEngine
+from hlbot.account import merge_tape, format_candles
+
+LIQUID_MAJORS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
 
 
 class LimitsBody(BaseModel):
@@ -31,6 +36,11 @@ class KillBody(BaseModel):
 def create_app(engine: SessionEngine, control_token: str,
                market_state_provider, account_provider=lambda: {}) -> FastAPI:
     app = FastAPI(title="hlbot")
+    origin = os.getenv("DASHBOARD_ORIGIN", "http://localhost:3000")
+    app.add_middleware(
+        CORSMiddleware, allow_origins=[origin], allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def _auth(token: str | None):
         if token is None or not hmac.compare_digest(token, control_token):
@@ -97,5 +107,37 @@ def create_app(engine: SessionEngine, control_token: str,
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return
+
+    @app.get("/account")
+    def account():
+        a = dict(account_provider())
+        a.pop("_fills", None); a.pop("_funding", None)
+        return a
+
+    @app.get("/positions")
+    def positions():
+        return account_provider().get("positions", [])
+
+    @app.get("/equity_curve")
+    def equity_curve(session_id: int):
+        return engine.store.get_pnl_snapshots(session_id)
+
+    @app.get("/candles/{coin}")
+    def candles(coin: str, interval: str = "1m", limit: int = 500):
+        raw = engine.store.get_candles(coin, interval, limit)
+        norm = [{"t": r["t"], "o": r["open"], "h": r["high"],
+                 "l": r["low"], "c": r["close"]} for r in raw]
+        return format_candles(norm)
+
+    @app.get("/tape")
+    def tape(limit: int = 50):
+        decisions = engine.store.get_decisions(engine.session_id) if engine.session_id else []
+        fills = account_provider().get("_fills", [])
+        return merge_tape(decisions, fills, limit)
+
+    @app.get("/coins")
+    def coins():
+        sz = getattr(engine.client, "sz_decimals", {})
+        return [{"name": c, "szDecimals": sz[c]} for c in LIQUID_MAJORS if c in sz]
 
     return app
