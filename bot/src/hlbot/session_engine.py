@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from hlbot.models import (
     MarketState, SessionState, SessionConfig, ActionType, Side, to_dict,
 )
@@ -15,6 +16,7 @@ class SessionEngine:
         self.paused = False
         self.cfg: SessionConfig | None = None
         self.session_id: int | None = None
+        self.session_started_at: int | None = None
         self.risk: RiskManager | None = None
         self.grids: dict[str, GridStrategy] = {}
         self.trends: dict[str, TrendOverlayStrategy] = {}
@@ -43,6 +45,7 @@ class SessionEngine:
             self.grids[coin] = g
             self.trends[coin] = TrendOverlayStrategy(cfg)
         self.session_start_value = self._account_value()
+        self.session_started_at = int(time.time())
         self.day_anchor_value = self.session_start_value
         self.day_anchor_date = self._today_local()
         self.trend_open = set()
@@ -74,6 +77,7 @@ class SessionEngine:
         self.paused = False
         self.cfg = None
         self.session_id = None
+        self.session_started_at = None
         self.risk = None
         self.grids = {}
         self.trends = {}
@@ -247,6 +251,8 @@ class SessionEngine:
             "state": self.state.value,
             "paused": self.paused,
             "mode": "testnet" if testnet else "mainnet",
+            "session_id": self.session_id,
+            "session_started_at": self.session_started_at,
             "watchlist": self.cfg.watchlist if self.cfg else [],
             "coins": coins,
         }

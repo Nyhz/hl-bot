@@ -243,6 +243,7 @@ def test_snapshot_has_armed_and_mode():
     snap = eng.snapshot(_flat_ms())
     assert snap["mode"] in ("testnet", "mainnet")
     assert "armed" in snap["coins"]["ETH"]
+    assert "session_id" in snap and snap["session_started_at"] is not None
 
 
 def test_trend_reentry_after_external_close():

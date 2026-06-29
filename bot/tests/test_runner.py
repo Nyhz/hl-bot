@@ -36,14 +36,20 @@ class _AcctClient:
 
 class _Eng:
     session_start_value = 50.0
+    session_started_at = 0
     class cfg:
         class limits:
             max_open_positions = 4
 
 def test_refresh_account_cache_populates():
-    cache = {}
-    refresh_account_cache(_AcctClient(), _Eng(), cache, fetch_extras=True)
+    cache = refresh_account_cache(_AcctClient(), _Eng(), {}, fetch_extras=True)
     assert cache["equity"] == 49.16
     assert cache["open_count"] == 1
     assert abs(cache["funding"] - (0.001 - 0.0005)) < 1e-9
     assert cache["_fills"][0]["coin"] == "BTC"
+
+def test_refresh_account_cache_preserves_fills_without_extras():
+    c1 = refresh_account_cache(_AcctClient(), _Eng(), {}, fetch_extras=True)
+    c2 = refresh_account_cache(_AcctClient(), _Eng(), c1, fetch_extras=False)
+    assert c2["_fills"] == c1["_fills"]   # preservadas sin re-fetch
+    assert c2["equity"] == 49.16

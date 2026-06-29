@@ -42,13 +42,19 @@ def test_compose_account():
     assert len(acc["positions"]) == 2
 
 def test_merge_tape_orders_desc_and_classifies():
-    decisions = [{"ts": 950, "coin": "BTC", "action": "place_limit", "reason": "grid rung"}]
-    tape = merge_tape(decisions, FILLS, limit=10)
-    assert [e["ts"] for e in tape] == [1000, 950, 900]  # desc
-    close = next(e for e in tape if e["ts"] == 1000)
-    assert close["kind"] == "close" and close["coin"] == "BTC" and close["pnl"] == 0.02
-    dec = next(e for e in tape if e["ts"] == 950)
-    assert dec["kind"] == "decision" and dec["reason"] == "grid rung"
+    decisions = [{"ts": 1700000950, "coin": "BTC", "action": "place_limit", "reason": "grid rung"}]
+    fills = [
+        {"coin": "BTC", "time": 1700001000000, "dir": "Close Long", "px": "67550",
+         "closedPnl": "0.02", "fee": "0.0015"},   # 1700001000 s
+        {"coin": "SOL", "time": 1700000900000, "dir": "Close Short", "px": "150",
+         "closedPnl": "-0.17", "fee": "0.0009"},   # 1700000900 s
+    ]
+    tape = merge_tape(decisions, fills, limit=10)
+    assert [e["ts"] for e in tape] == [1700001000, 1700000950, 1700000900]  # desc, en segundos
+    close = next(e for e in tape if e["coin"] == "BTC" and e["kind"] == "close")
+    assert close["ts"] == 1700001000 and close["pnl"] == 0.02
+    dec = next(e for e in tape if e["kind"] == "decision")
+    assert dec["ts"] == 1700000950 and dec["reason"] == "grid rung"
 
 def test_format_candles_to_seconds_ascending():
     raw = [{"t": 60000, "o": "10", "h": "12", "l": "9", "c": "11", "v": "1"},

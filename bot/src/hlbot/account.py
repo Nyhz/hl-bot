@@ -62,7 +62,7 @@ def merge_tape(decisions: list[dict], fills: list[dict], limit: int = 50) -> lis
     for f in fills:
         dir_ = f.get("dir") or ""
         events.append({
-            "ts": int(f.get("time", 0)),
+            "ts": int(f.get("time", 0) or 0) // 1000,   # HL time viene en ms -> segundos
             "kind": "close" if "Close" in dir_ else "open",
             "coin": f.get("coin"),
             "side": "short" if "Short" in dir_ else ("long" if "Long" in dir_ else None),
