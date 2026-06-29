@@ -65,3 +65,21 @@ def test_create_session_with_mode_and_list(tmp_path):
     testnet_ids = [s["id"] for s in store.list_sessions(mode="testnet")]
     assert a in testnet_ids and b not in testnet_ids
     assert len(store.list_sessions()) == 2  # sin filtro, todas
+
+def test_record_fill_unique_dedups_by_tid(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0, mode="testnet")
+    for _ in range(2):  # mismo tid dos veces -> una fila
+        store.record_fill_unique(sid, "tid1", 100, "ETH", "B", "Close Long",
+                                 3000.0, 0.004, 0.0015, 0.02)
+    fills = store.get_fills(sid)
+    assert len(fills) == 1
+    assert fills[0]["closed_pnl"] == 0.02 and fills[0]["dir"] == "Close Long"
+
+def test_record_funding_unique_dedups(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0, mode="testnet")
+    for _ in range(2):
+        store.record_funding_unique(sid, "fk1", 100, "ETH", -0.001)
+    f = store.get_funding(sid)
+    assert len(f) == 1 and f[0]["amount"] == -0.001

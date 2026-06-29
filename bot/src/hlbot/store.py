@@ -179,3 +179,30 @@ class Store:
                 "WHERE coin=? AND interval=? ORDER BY t DESC LIMIT ?",
                 (coin, interval, limit)).fetchall()
             return [dict(r) for r in reversed(rows)]  # ascendente por t
+
+    def record_fill_unique(self, session_id: int, tid: str, ts: int, coin: str,
+                           side: str, dir: str, price: float, size: float,
+                           fee: float, closed_pnl: float) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO fills "
+                "(session_id, tid, ts, coin, side, dir, price, size, fee, closed_pnl) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, tid, ts, coin, side, dir, price, size, fee, closed_pnl),
+            )
+
+    def record_funding_unique(self, session_id: int, fkey: str, ts: int,
+                              coin: str, amount: float) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO funding_payments "
+                "(session_id, fkey, ts, coin, amount) VALUES (?, ?, ?, ?, ?)",
+                (session_id, fkey, ts, coin, amount),
+            )
+
+    def get_funding(self, session_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM funding_payments WHERE session_id=? ORDER BY id",
+                (session_id,)).fetchall()
+            return [dict(r) for r in rows]
