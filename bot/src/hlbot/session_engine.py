@@ -73,44 +73,52 @@ class SessionEngine:
     def tick(self, market_states: dict[str, MarketState]) -> None:
         if self.state == SessionState.IDLE or self.cfg is None:
             return
+        n_open = self._open_positions_count()
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
             decisions = self._decisions_for(ms)
             for d in decisions:
-                # En CLOSING solo se permiten ordenes reduce_only / cierres.
+                # En CLOSING solo se permiten reduce_only / cierres.
                 if self.state == SessionState.CLOSING and not (
                     d.reduce_only or d.action in (ActionType.CLOSE, ActionType.SET_STOP)
                 ):
                     continue
-                self._apply(coin, ms, d)
-        if self.state == SessionState.CLOSING and self._open_positions_count() == 0:
+                self._apply(coin, ms, d, n_open)
+        if self.state == SessionState.CLOSING and n_open == 0:
             self._reset()
 
-    def _apply(self, coin: str, ms: MarketState, d) -> None:
+    def _apply(self, coin: str, ms: MarketState, d, n_open: int) -> None:
         if d.action == ActionType.PLACE_LIMIT:
-            notional = (d.price or 0) * (d.size or 0)
-            ok, reason = self.risk.can_open(notional, self._open_positions_count(),
-                                            self.cfg.limits.max_leverage)
-            if not ok:
-                self.store.record_risk_event(self.session_id, "rechazo", reason)
-                return
+            if not d.reduce_only:
+                notional = (d.price or 0) * (d.size or 0)
+                ok, reason = self.risk.can_open(notional, n_open,
+                                                self.cfg.limits.max_leverage)
+                if not ok:
+                    self.store.record_risk_event(self.session_id, "rechazo", reason)
+                    return
+            if d.side is None:
+                raise ValueError("PLACE_LIMIT requiere side")
             self.client.place_limit(coin, d.side == Side.BUY, d.price, d.size,
                                     post_only=True, reduce_only=d.reduce_only)
-            self.state = SessionState.ACTIVE
+            if self.state != SessionState.CLOSING:
+                self.state = SessionState.ACTIVE
         elif d.action == ActionType.PLACE_MARKET:
-            notional = ms.mid * (d.size or 0)
-            ok, reason = self.risk.can_open(notional, self._open_positions_count(),
-                                            self.cfg.limits.max_leverage)
-            if not ok:
-                self.store.record_risk_event(self.session_id, "rechazo", reason)
-                return
+            if not d.reduce_only:
+                notional = ms.mid * (d.size or 0)
+                ok, reason = self.risk.can_open(notional, n_open,
+                                                self.cfg.limits.max_leverage)
+                if not ok:
+                    self.store.record_risk_event(self.session_id, "rechazo", reason)
+                    return
+            if d.side is None:
+                raise ValueError("PLACE_MARKET requiere side")
             self.client.place_limit(coin, d.side == Side.BUY, ms.mid, d.size,
                                     post_only=False, reduce_only=d.reduce_only)
-            self.state = SessionState.ACTIVE
+            if self.state != SessionState.CLOSING:
+                self.state = SessionState.ACTIVE
         elif d.action == ActionType.CLOSE:
             self.client.market_close(coin)
-        # SET_STOP se registra como decision; el motor lo gestionara en una iteracion futura.
         self.store.record_decision(self.session_id, coin, d.action.value, d.reason)
 
     def snapshot(self, market_states: dict[str, MarketState] | None = None) -> dict:

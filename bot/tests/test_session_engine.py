@@ -81,3 +81,39 @@ def test_snapshot_exposes_triggers_and_conditions():
     assert "ETH" in snap["coins"]
     assert "triggers" in snap["coins"]["ETH"]
     assert "conditions" in snap["coins"]["ETH"]
+
+def test_closing_reduce_only_bypasses_risk_and_keeps_closing():
+    from hlbot.models import Decision, ActionType, Side, RiskLimits, SessionConfig
+
+    class FakeClientWithPosition(FakeClient):
+        def user_state(self):
+            return {"assetPositions": [{"position": {"coin": "ETH"}}],
+                    "marginSummary": {"accountValue": "40"}}
+
+    # límite de 1 posición: una apertura normal sería rechazada; reduce_only debe pasar igual
+    limits = RiskLimits(15.0, 1, 2.0, 5.0, 20.0)
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+
+    client = FakeClientWithPosition()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(cfg)
+
+    class _Stub:
+        def is_trending(self, ms):
+            return False
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                             price=2950.0, size=0.01, reduce_only=True, reason="reduce")]
+        def armed_triggers(self, ms):
+            return []
+        def conditions(self, ms):
+            return []
+
+    eng.grids["ETH"] = _Stub()
+    eng.trends["ETH"] = _Stub()
+
+    eng.close()                 # -> CLOSING
+    eng.tick(_flat_ms())
+    assert eng.state == SessionState.CLOSING          # reduce_only NO reactiva a ACTIVE
+    assert any(o[4] is True for o in client.orders)   # la orden reduce_only se colocó (risk no la bloqueó)
