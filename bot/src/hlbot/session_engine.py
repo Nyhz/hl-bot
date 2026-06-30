@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 import time
 from hlbot.models import (
     MarketState, SessionState, SessionConfig, ActionType, Side, to_dict,
@@ -13,6 +14,7 @@ class SessionEngine:
     def __init__(self, client, store):
         self.client = client
         self.store = store
+        self.lock = threading.Lock()
         self.state = SessionState.IDLE
         self.paused = False
         self.cfg: SessionConfig | None = None
@@ -110,9 +112,13 @@ class SessionEngine:
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
         grid = self.grids[ms.coin]
-        if ms.coin in self.trend_open or trend.is_trending(ms):
+        if ms.coin in self.trend_open:        # posición de tendencia -> la gestiona momentum
             return trend.evaluate(ms)
-        return grid.evaluate(ms)
+        if abs(ms.inventory) > 1e-12:          # posición de grid abierta -> la gestiona el grid
+            return grid.evaluate(ms)           #   (aunque el régimen sea de tendencia)
+        if trend.is_trending(ms):              # plano + tendencia -> momentum puede entrar
+            return trend.evaluate(ms)
+        return grid.evaluate(ms)               # plano + lateral -> grid
 
     def _account_value(self) -> float:
         state = self.client.user_state()

@@ -91,13 +91,10 @@ def persist_candles(store: Store, coin: str, raw: list[dict]) -> None:
             )
 
 
-async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
-                      shared: dict[str, MarketState], cache_holder: dict) -> None:
-    ticks = 0
-    loop_count = 0
-    while True:
+def run_tick(engine, client, store, shared, cache_holder, counters):
+    with engine.lock:
         try:
-            loop_count += 1
+            counters["loop"] += 1
             coins = engine.cfg.watchlist if engine.cfg else []
             now_ms = int(time.time() * 1000)
             funding: dict[str, float] = {}
@@ -115,15 +112,22 @@ async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
                 persist_candles(store, coin, raw)
             if states:
                 engine.tick(states)
-                ticks += 1
-                if ticks % PNL_SNAPSHOT_EVERY == 0 and engine.session_id is not None:
+                counters["ticks"] += 1
+                if counters["ticks"] % PNL_SNAPSHOT_EVERY == 0 and engine.session_id is not None:
                     store.record_pnl_snapshot(engine.session_id, engine._account_value())
             if engine.cfg is not None:
                 cache_holder["v"] = refresh_account_cache(
                     client, engine, cache_holder["v"],
-                    fetch_extras=(loop_count % ACCOUNT_EXTRAS_EVERY == 0), store=store)
-        except Exception as e:  # red caída, etc.: log y seguir
+                    fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
+        except Exception as e:  # red caída, BD, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)
+
+
+async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
+                      shared: dict[str, MarketState], cache_holder: dict) -> None:
+    counters = {"loop": 0, "ticks": 0}
+    while True:
+        await asyncio.to_thread(run_tick, engine, client, store, shared, cache_holder, counters)
         await asyncio.sleep(TICK_SECONDS)
 
 

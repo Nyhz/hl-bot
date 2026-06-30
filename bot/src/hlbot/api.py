@@ -67,15 +67,23 @@ def create_app(engine: SessionEngine, control_token: str,
             raise HTTPException(status_code=401, detail="token de control invalido")
 
     def _full_snapshot():
-        snap = engine.snapshot(market_state_provider())
-        acc = dict(account_provider())
-        fills = acc.pop("_fills", [])
-        acc.pop("_funding", None)
-        decisions = engine.store.get_decisions(engine.session_id) if engine.session_id else []
-        snap["account"] = acc
-        snap["positions"] = acc.get("positions", [])
-        snap["tape_recent"] = merge_tape(decisions, fills, limit=20)
-        return snap
+        try:
+            snap = engine.snapshot(market_state_provider())
+            acc = dict(account_provider())
+            fills = acc.pop("_fills", [])
+            acc.pop("_funding", None)
+            decisions = engine.store.get_decisions(engine.session_id) if engine.session_id else []
+            snap["account"] = acc
+            snap["positions"] = acc.get("positions", [])
+            snap["tape_recent"] = merge_tape(decisions, fills, limit=20)
+            return snap
+        except Exception as e:
+            print(f"[snapshot] error: {e}", flush=True)
+            return {"state": getattr(engine.state, "value", "idle"), "paused": engine.paused,
+                    "mode": "testnet" if getattr(getattr(engine.client, "cfg", None), "testnet", True) else "mainnet",
+                    "session_id": engine.session_id,
+                    "session_started_at": engine.session_started_at,
+                    "watchlist": [], "coins": {}, "account": {}, "positions": [], "tape_recent": []}
 
     @app.get("/state")
     def state():
@@ -93,12 +101,12 @@ def create_app(engine: SessionEngine, control_token: str,
         limits_data = body.limits.model_dump()
         limits_data["max_open_positions"] = min(MAX_OPEN_CAP, limits_data["max_open_positions"])
         limits = RiskLimits(**limits_data)
-        cfg = SessionConfig(watchlist=body.watchlist, capital=body.capital,
-                            limits=limits, grid_n=body.grid_n,
-                            grid_range_pct=body.grid_range_pct,
+        cfg = SessionConfig(watchlist=body.watchlist, capital=body.capital, limits=limits,
+                            grid_n=body.grid_n, grid_range_pct=body.grid_range_pct,
                             adx_threshold=body.adx_threshold)
         try:
-            engine.launch(cfg)
+            with engine.lock:
+                engine.launch(cfg)
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))
         except ValueError as e:
@@ -109,7 +117,8 @@ def create_app(engine: SessionEngine, control_token: str,
     def close(x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
         try:
-            engine.close()
+            with engine.lock:
+                engine.close()
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return {"state": engine.state.value}
@@ -118,7 +127,8 @@ def create_app(engine: SessionEngine, control_token: str,
     def kill(body: KillBody, x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
         try:
-            engine.kill(confirm=body.confirm)
+            with engine.lock:
+                engine.kill(confirm=body.confirm)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return {"state": engine.state.value}
@@ -126,9 +136,10 @@ def create_app(engine: SessionEngine, control_token: str,
     @app.post("/limits")
     def update_limits(body: LimitsBody, x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
-        if engine.risk is None:
-            raise HTTPException(status_code=409, detail="no hay sesion activa")
-        engine.risk.limits = RiskLimits(**body.model_dump())
+        with engine.lock:
+            if engine.risk is None:
+                raise HTTPException(status_code=409, detail="no hay sesion activa")
+            engine.risk.limits = RiskLimits(**body.model_dump())
         return {"ok": True}
 
     @app.websocket("/ws")
@@ -136,7 +147,10 @@ def create_app(engine: SessionEngine, control_token: str,
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(_full_snapshot())
+                # _full_snapshot hace I/O de BD (lectura): fuera del event loop para que
+                # el heartbeat del WS nunca se bloquee (mismo motivo que el tick).
+                snap = await asyncio.to_thread(_full_snapshot)
+                await websocket.send_json(snap)
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return

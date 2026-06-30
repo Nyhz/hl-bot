@@ -430,3 +430,61 @@ def test_engine_trailing_stop_short_only_improves(monkeypatch):
     eng.tick(_flat_ms())   # 2055 > 2050 -> empeora -> no toca
     assert len(client.stops) == 2          # solo dos colocaciones (inicial + 1 mejora)
     assert len(client.canceled_oids) == 1  # canceló el stop viejo una vez
+
+
+def test_decisions_grid_position_not_hijacked_by_trend():
+    # posición de GRID abierta (inventory>0, NO en trend_open) y régimen de tendencia:
+    # debe seguir gestionándola el GRID, no momentum.
+    from hlbot.models import MarketState, ActionType, Decision
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg())
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.CLOSE, reduce_only=True, reason="no debería")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+    ms = MarketState(coin="ETH", mid=3000.0, candles=[], inventory=0.01)  # posición de grid
+    ds = eng._decisions_for(ms)
+    assert all(d.action != ActionType.CLOSE for d in ds)   # NO lo cierra momentum
+    # son decisiones del grid (place_limit) o vacío, nunca el CLOSE del stub de tendencia
+
+
+def test_decisions_trend_position_managed_by_trend():
+    from hlbot.models import MarketState, ActionType, Decision
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+    class _Trend:
+        def is_trending(self, ms): return False
+        def evaluate(self, ms): return [Decision("ETH", ActionType.SET_STOP, reason="trail")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+    ms = MarketState(coin="ETH", mid=3000.0, candles=[], inventory=0.01)
+    ds = eng._decisions_for(ms)
+    assert any(d.action == ActionType.SET_STOP for d in ds)  # lo gestiona momentum
+
+
+def test_decisions_flat_trending_enters_trend():
+    from hlbot.models import MarketState, ActionType, Decision
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg())
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms): return [Decision("ETH", ActionType.PLACE_MARKET, reason="entra")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+    ms = MarketState(coin="ETH", mid=3000.0, candles=[], inventory=0.0)  # plano
+    ds = eng._decisions_for(ms)
+    assert any(d.action == ActionType.PLACE_MARKET for d in ds)  # momentum entra
+
+
+def test_engine_has_lock_and_is_free():
+    import threading
+    eng = SessionEngine(FakeClient(), FakeStore())
+    assert isinstance(eng.lock, type(threading.Lock()))
+    assert eng.lock.acquire(blocking=False) is True   # libre
+    eng.lock.release()
