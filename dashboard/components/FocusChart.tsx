@@ -23,9 +23,12 @@ export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinV
       upColor: "#00ff88", downColor: "#ff4466", wickUpColor: "#00ff88", wickDownColor: "#ff4466", borderVisible: false,
     });
     chartRef.current = chart; seriesRef.current = series;
-    const onResize = () => ref.current && chart.applyOptions({ width: ref.current.clientWidth });
-    onResize(); window.addEventListener("resize", onResize);
-    return () => { window.removeEventListener("resize", onResize); chart.remove(); chartRef.current = null; seriesRef.current = null; };
+    const el = ref.current;
+    const fit = () => chart.applyOptions({ width: el.clientWidth });
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
   }, []);
 
   // Las velas se recargan al cambiar de par (coin).

@@ -15,12 +15,12 @@ export function HeaderBar({ snapshot, connected }: { snapshot: Snapshot | null; 
   const started = snapshot?.session_started_at ?? null;
   const age = started ? now - started : null;
   return (
-    <div className="panel" style={{ display: "flex", alignItems: "center", gap: 16, padding: "10px 16px" }}>
+    <div className="panel header-bar">
       <span className="glow" style={{ color: modeColor, fontWeight: 700 }}>NYHZ // MICRO-DEGEN TERMINAL</span>
       <Link href="/" style={{ color: "var(--muted)", textDecoration: "none", fontSize: 12 }}>LIVE</Link>
       <Link href="/sessions" style={{ color: "var(--muted)", textDecoration: "none", fontSize: 12 }}>HISTORY</Link>
       <span className="muted" style={{ fontSize: 12 }}>toy fund · céntimos pa&apos; arriba</span>
-      <span style={{ marginLeft: "auto", color: modeColor, fontWeight: 700 }}>{mode.toUpperCase()}</span>
+      <span className="header-spacer" style={{ color: modeColor, fontWeight: 700 }}>{mode.toUpperCase()}</span>
       <span className={connected ? "live-pulse" : undefined} style={{ color: connected ? "var(--neon-green)" : "var(--neon-red)" }}>{connected ? "● LIVE" : "○ OFFLINE"}</span>
       <span className="muted">session {fmtAge(age)}</span>
       <span className="muted">{(snapshot?.state ?? "—").toUpperCase()}</span>

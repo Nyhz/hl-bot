@@ -14,17 +14,16 @@ export function StatTiles({ account }: { account: Account }) {
     { label: "FEES PAID", value: account.fees_paid, decimals: 3, color: "var(--neon-red)" },
     { label: "FUNDING", value: account.funding, decimals: 3, color: pnlColor(account.funding) },
   ];
-  const totalCols = staticTiles.length + numericTiles.length;
   return (
-    <div style={{ display: "grid", gridTemplateColumns: `repeat(${totalCols}, 1fr)`, gap: 1 }}>
+    <div className="stat-tiles">
       {staticTiles.map((t) => (
-        <div key={t.label} className="panel" style={{ padding: 12 }}>
+        <div key={t.label} className="panel" style={{ padding: 12, minWidth: 0 }}>
           <div className="muted" style={{ fontSize: 11 }}>{t.label}</div>
           <div style={{ fontSize: 20, fontWeight: 700, color: t.color ?? "var(--text)" }}>{t.value}</div>
         </div>
       ))}
       {numericTiles.map((t) => (
-        <div key={t.label} className="panel" style={{ padding: 12 }}>
+        <div key={t.label} className="panel" style={{ padding: 12, minWidth: 0 }}>
           <div className="muted" style={{ fontSize: 11 }}>{t.label}</div>
           <div style={{ fontSize: 20, fontWeight: 700, color: t.color }}>
             <NumberTicker value={t.value} format={(n) => fmtUsd(n, t.decimals)} />

@@ -31,9 +31,12 @@ export function EquityCurve({ sessionId, equity }: { sessionId: number | null; e
         }
       }).catch(() => {});
     }
-    const onResize = () => ref.current && chart.applyOptions({ width: ref.current.clientWidth });
-    onResize(); window.addEventListener("resize", onResize);
-    return () => { cancelled = true; window.removeEventListener("resize", onResize); chart.remove(); seriesRef.current = null; };
+    const el = ref.current;
+    const fit = () => chart.applyOptions({ width: el.clientWidth });
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => { cancelled = true; ro.disconnect(); chart.remove(); seriesRef.current = null; };
   }, [sessionId]);
 
   useEffect(() => {

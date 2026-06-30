@@ -35,15 +35,15 @@ export default function Home() {
         <SessionControls state={sessionState} />
       </div>
       {snapshot && (
-        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 12 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="terminal-grid">
+          <div className="terminal-col">
             <EquityHero account={snapshot.account} />
             <EquityCurve sessionId={snapshot.session_id} equity={snapshot.account.equity} />
             <StatTiles account={snapshot.account} />
             <OpenPositions positions={snapshot.positions} coins={snapshot.coins} onFocus={setFocusCoin} />
             <Tape events={snapshot.tape_recent} />
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="terminal-col">
             <LaunchPanel coins={coinsList} state={sessionState} />
             <FocusChart coin={displayedCoin} coinView={displayedCoin ? snapshot.coins[displayedCoin] : undefined} mid={displayedCoin ? snapshot.coins[displayedCoin]?.mid ?? null : null} />
             <Watchlist coins={snapshot.coins} positions={snapshot.positions} onFocus={setFocusCoin} />

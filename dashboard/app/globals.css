@@ -25,3 +25,34 @@ html, body {
 @keyframes armedGlow { 0%,100% { text-shadow: 0 0 4px currentColor; } 50% { text-shadow: 0 0 12px currentColor; } }
 .live-pulse { animation: livePulse 1.6s ease-in-out infinite; }
 .armed-glow { animation: armedGlow 1.2s ease-in-out infinite; }
+
+/* ---- Layout responsive ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { overflow-x: hidden; }
+
+.terminal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+/* min-width:0 deja que charts y contenido encojan por debajo de su tamaño de contenido */
+.terminal-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Tiles que hacen wrap automáticamente en lugar de desbordar */
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; }
+
+/* Cabecera que envuelve cuando no cabe */
+.header-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; }
+.header-spacer { margin-left: auto; }
+
+/* Hero apila P&L bajo Equity en pantallas estrechas */
+.equity-hero { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+@media (max-width: 1024px) {
+  .terminal-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .equity-hero { flex-direction: column; }
+  .equity-hero .hero-pnl { text-align: left; }
+}
