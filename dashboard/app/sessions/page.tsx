@@ -13,7 +13,11 @@ export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   useEffect(() => { api.getStatsGlobal().then(setStats).catch(() => {}); }, []);
-  useEffect(() => { api.getSessions(mode === "all" ? undefined : mode).then(setSessions).catch(() => {}); }, [mode]);
+  useEffect(() => {
+    let cancelled = false;
+    api.getSessions(mode === "all" ? undefined : mode).then((r) => { if (!cancelled) setSessions(r); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [mode]);
   return (
     <main style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, minHeight: "100vh" }}>
       <div className="panel" style={{ padding: "10px 16px", display: "flex", gap: 16, alignItems: "center" }}>
@@ -24,13 +28,13 @@ export default function SessionsPage() {
       {stats && <GlobalStats stats={stats} />}
       <div style={{ display: "flex", gap: 6 }}>
         {(["all","testnet","mainnet"] as const).map((m) => (
-          <button key={m} onClick={() => setMode(m)}
+          <button key={m} onClick={() => { setMode(m); setSelectedId(null); }}
             style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #1c1f26", cursor: "pointer", fontSize: 12,
               background: mode === m ? "var(--neon-green)" : "transparent", color: mode === m ? "#000" : "var(--text)" }}>{m}</button>
         ))}
       </div>
       <SessionsList sessions={sessions} onSelect={setSelectedId} selectedId={selectedId} />
-      {selectedId !== null && <SessionDetail sessionId={selectedId} />}
+      {selectedId !== null && <SessionDetail key={selectedId} sessionId={selectedId} />}
     </main>
   );
 }
