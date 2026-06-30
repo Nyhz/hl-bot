@@ -213,24 +213,28 @@ class SessionEngine:
             self._reset()
 
     def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
-        desired = [(d.price, d) for d in decisions if d.action == ActionType.PLACE_LIMIT]
-        grid = self.grids[coin]
-        tol = max(grid.half_spread(ms, grid._sigma(ms)) / 2.0, 1e-9)
-        open_orders = self.client.open_orders(coin)
-        # 1) cancelar stale: órdenes en reposo lejos de cualquier precio deseado
-        for o in open_orders:
-            px = float(o.get("limitPx", 0) or 0)
-            oid = o.get("oid")
-            if oid is None:
-                continue
-            if not any(abs(px - dp) <= tol for dp, _ in desired):
-                self.client.cancel_order(coin, oid)
-        # 2) colocar las deseadas que no tengan ya una orden cerca (guards vía _apply/_risk_ok)
-        rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
-        for dp, d in desired:
-            if any(abs(dp - rp) <= tol for rp in rest_px):
-                continue
-            self._apply(coin, ms, d, n_open, equity, gross, coin_notional)
+        try:
+            desired = [(d.price, d) for d in decisions if d.action == ActionType.PLACE_LIMIT]
+            grid = self.grids[coin]
+            tol = max(grid.half_spread(ms, grid._sigma(ms)) / 2.0, 1e-9)
+            open_orders = self.client.open_orders(coin)
+            # 1) cancelar stale: órdenes en reposo lejos de cualquier precio deseado
+            for o in open_orders:
+                px = float(o.get("limitPx", 0) or 0)
+                oid = o.get("oid")
+                if oid is None:
+                    continue
+                if not any(abs(px - dp) <= tol for dp, _ in desired):
+                    self.client.cancel_order(coin, oid)
+            # 2) colocar las deseadas que no tengan ya una orden cerca (guards vía _apply/_risk_ok)
+            rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
+            for dp, d in desired:
+                if any(abs(dp - rp) <= tol for rp in rest_px):
+                    continue
+                self._apply(coin, ms, d, n_open, equity, gross, coin_notional)
+        except Exception as e:
+            self.store.record_risk_event(self.session_id, "reconcile_error", str(e))
+            return
 
     def _apply(self, coin: str, ms: MarketState, d, n_open: int,
                equity: float, gross: float, coin_notional: float) -> None:
