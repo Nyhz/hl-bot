@@ -2,8 +2,8 @@ import type { CoinView, Position } from "@/lib/types";
 import { conditionPct, fmtFunding, fundingColor } from "@/lib/view";
 import { Gauge } from "./Gauge";
 
-export function Watchlist({ coins, positions, onFocus }: {
-  coins: Record<string, CoinView>; positions: Position[]; onFocus?: (coin: string) => void;
+export function Watchlist({ coins, positions }: {
+  coins: Record<string, CoinView>; positions: Position[];
 }) {
   const open = new Set(positions.map((p) => p.coin));
   const candidates = Object.entries(coins).filter(([c]) => !open.has(c));
@@ -12,7 +12,7 @@ export function Watchlist({ coins, positions, onFocus }: {
       <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>WATCHLIST · condiciones para abrir</div>
       {candidates.length === 0 && <div className="muted" style={{ fontSize: 12 }}>todos los pares con posición</div>}
       {candidates.map(([coin, cv]) => (
-        <div key={coin} onClick={() => onFocus?.(coin)} style={{ padding: "8px 4px", borderBottom: "1px solid #1c1f26", cursor: "pointer" }}>
+        <div key={coin} style={{ padding: "8px 4px", borderBottom: "1px solid #1c1f26" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
             <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               <b>{coin}</b> <span className="muted">{cv.mode}</span> <span className="muted">{cv.mid}</span>

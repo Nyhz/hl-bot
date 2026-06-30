@@ -1,4 +1,4 @@
-import type { Candle, Condition, Position } from "./types";
+import type { Candle, Condition, Position, CoinView } from "./types";
 
 export function conditionPct(c: Condition): number {
   if (c.met) return 1;
@@ -61,4 +61,20 @@ export function equitySeries(rows: { ts: number; total_pnl: number }[]): { time:
     else out.push({ time: r.ts, value: r.total_pnl });
   }
   return out;
+}
+
+export function slotLayout(n: number): "idle" | "one" | "two" | "grid" {
+  if (n <= 0) return "idle";
+  if (n === 1) return "one";
+  if (n === 2) return "two";
+  return "grid";
+}
+
+export interface SlotItem { coin: string; position: Position; coinView: CoinView | undefined; }
+
+export function slotItems(positions: Position[], coins: Record<string, CoinView>): SlotItem[] {
+  return [...positions]
+    .sort((a, b) => a.coin.localeCompare(b.coin))
+    .slice(0, 4)
+    .map((p) => ({ coin: p.coin, position: p, coinView: coins[p.coin] }));
 }

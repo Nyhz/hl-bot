@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Snapshot } from "@/lib/types";
 import { fmtAge } from "@/lib/view";
+import { SessionControls } from "./SessionControls";
 
-export function HeaderBar({ snapshot, connected }: { snapshot: Snapshot | null; connected: boolean }) {
+export function HeaderBar({ snapshot, connected, state, onLaunch }: { snapshot: Snapshot | null; connected: boolean; state: string; onLaunch: () => void }) {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
@@ -25,6 +26,13 @@ export function HeaderBar({ snapshot, connected }: { snapshot: Snapshot | null; 
       <span className={connected ? "live-pulse" : undefined} style={{ color: connected ? "var(--neon-green)" : "var(--neon-red)" }}>{connected ? "● LIVE" : "○ OFFLINE"}</span>
       <span className="muted">session {fmtAge(age)}</span>
       <span className="muted">{(snapshot?.state ?? "—").toUpperCase()}</span>
+      <span style={{ marginLeft: 8 }}>
+        {state === "idle"
+          ? <button onClick={onLaunch}
+              style={{ padding: "4px 12px", border: "none", borderRadius: 6, background: "var(--neon-green)",
+                color: "#000", fontWeight: 700, cursor: "pointer", fontSize: 12 }}>▶ Launch</button>
+          : <SessionControls state={state} />}
+      </span>
     </div>
   );
 }

@@ -10,7 +10,7 @@ const DEFAULTS: LaunchForm = {
   dailyLossLimit: 5, totalLossLimit: 20,
 };
 
-export function LaunchPanel({ coins, state }: { coins: { name: string }[]; state: string }) {
+export function LaunchPanel({ coins, state, onLaunched }: { coins: { name: string }[]; state: string; onLaunched?: () => void }) {
   const [f, setF] = useState<LaunchForm>(DEFAULTS);
   const [busy, setBusy] = useState(false);
   const idle = state === "idle";
@@ -24,7 +24,7 @@ export function LaunchPanel({ coins, state }: { coins: { name: string }[]; state
     setBusy(true);
     const r = await postControl("launch", buildLaunchBody(f));
     setBusy(false);
-    if (r.ok) toast.success("Sesión lanzada");
+    if (r.ok) { toast.success("Sesión lanzada"); onLaunched?.(); }
     else toast.error(`No se pudo lanzar (${r.status}): ${(r.data as { detail?: string })?.detail ?? ""}`);
   }
 
