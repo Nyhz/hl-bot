@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import type { GlobalStats as GS, SessionSummary } from "@/lib/types";
 import { GlobalStats } from "@/components/GlobalStats";
 import { SessionsList } from "@/components/SessionsList";
+import { SessionDetail } from "@/components/SessionDetail";
 
 export default function SessionsPage() {
   const [stats, setStats] = useState<GS | null>(null);
@@ -29,6 +30,7 @@ export default function SessionsPage() {
         ))}
       </div>
       <SessionsList sessions={sessions} onSelect={setSelectedId} selectedId={selectedId} />
+      {selectedId !== null && <SessionDetail sessionId={selectedId} />}
     </main>
   );
 }
