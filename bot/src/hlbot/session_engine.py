@@ -186,6 +186,12 @@ class SessionEngine:
         self.trend_open -= gone
         self.trend_confirmed -= gone
         for c in gone:
+            oid = self.stop_oids.get(c)
+            if oid is not None:
+                try:
+                    self.client.cancel_order(c, oid)
+                except Exception as e:
+                    self.store.record_risk_event(self.session_id, "stop_error", str(e))
             self.stop_levels.pop(c, None)
             self.stop_oids.pop(c, None)
         for coin, ms in market_states.items():
@@ -195,7 +201,7 @@ class SessionEngine:
             # #4: al entrar en régimen de tendencia, cancelar una vez el grid en reposo
             # (deja de mezclar inventario grid con la entrada de tendencia).
             trending = self.trends[coin].is_trending(ms)
-            if trending and coin not in self.trend_regime:
+            if trending and coin not in self.trend_regime and coin not in self.trend_open:
                 self.client.cancel_all(coin)
                 self.trend_regime.add(coin)
             elif not trending:

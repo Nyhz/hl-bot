@@ -388,6 +388,23 @@ def test_engine_trailing_stop_only_improves(monkeypatch):
     assert len(client.canceled_oids) == 1  # canceló el trigger viejo una vez
 
 
+def test_regime_does_not_cancel_while_trend_position_held():
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.004", "positionValue": "12"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+    before = len(client.canceled)
+    eng.tick(_flat_ms())
+    assert len(client.canceled) == before   # no se cancela el grid/stop mientras hay posición de tendencia
+
+
 def test_engine_trailing_stop_short_only_improves(monkeypatch):
     """BUY stop trailing para posición corta: mejora bajando, no sube."""
     from hlbot.models import Decision, ActionType, Side

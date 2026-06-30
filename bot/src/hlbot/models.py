@@ -88,7 +88,7 @@ class SessionConfig:
     capital: float
     limits: RiskLimits
     grid_n: int = 10
-    grid_range_pct: float = 0.03        # clamp de rango máximo del grid respecto a la referencia
+    grid_range_pct: float = 0.02        # clamp de rango máximo del grid respecto a la referencia
     ema_fast: int = 9
     ema_slow: int = 21
     adx_period: int = 14
