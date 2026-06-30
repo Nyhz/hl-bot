@@ -18,7 +18,7 @@ export function HeaderBar({ snapshot, connected }: { snapshot: Snapshot | null; 
       <span className="glow" style={{ color: modeColor, fontWeight: 700 }}>NYHZ // MICRO-DEGEN TERMINAL</span>
       <span className="muted" style={{ fontSize: 12 }}>toy fund · céntimos pa&apos; arriba</span>
       <span style={{ marginLeft: "auto", color: modeColor, fontWeight: 700 }}>{mode.toUpperCase()}</span>
-      <span style={{ color: connected ? "var(--neon-green)" : "var(--neon-red)" }}>{connected ? "● LIVE" : "○ OFFLINE"}</span>
+      <span className={connected ? "live-pulse" : undefined} style={{ color: connected ? "var(--neon-green)" : "var(--neon-red)" }}>{connected ? "● LIVE" : "○ OFFLINE"}</span>
       <span className="muted">session {fmtAge(age)}</span>
       <span className="muted">{(snapshot?.state ?? "—").toUpperCase()}</span>
     </div>

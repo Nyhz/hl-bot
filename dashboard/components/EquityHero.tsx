@@ -1,6 +1,8 @@
+"use client";
 import type { Account } from "@/lib/types";
 import { fmtUsd, fmtPct } from "@/lib/format";
 import { pnlColor } from "@/lib/view";
+import { NumberTicker } from "./NumberTicker";
 
 export function EquityHero({ account }: { account: Account }) {
   const pnl = account.session_pnl;
@@ -9,12 +11,12 @@ export function EquityHero({ account }: { account: Account }) {
     <div className="panel" style={{ padding: 20, display: "flex", justifyContent: "space-between" }}>
       <div>
         <div className="muted" style={{ fontSize: 12 }}>EQUITY</div>
-        <div style={{ fontSize: 44, fontWeight: 800 }}>{fmtUsd(account.equity)}</div>
+        <div style={{ fontSize: 44, fontWeight: 800 }}><NumberTicker value={account.equity} format={(n) => fmtUsd(n)} /></div>
       </div>
       <div style={{ textAlign: "right" }}>
         <div className="muted" style={{ fontSize: 12 }}>SESSION P&amp;L</div>
         <div style={{ fontSize: 44, fontWeight: 800, color: pnlColor(pnl) }} className="glow">
-          {fmtUsd(pnl)} <span style={{ fontSize: 18 }}>{fmtPct(pct)}</span>
+          <NumberTicker value={pnl} format={(n) => fmtUsd(n)} /> <span style={{ fontSize: 18 }}>{fmtPct(pct)}</span>
         </div>
       </div>
     </div>
