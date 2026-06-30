@@ -2,7 +2,6 @@ from fastapi.testclient import TestClient
 from hlbot.api import create_app
 from hlbot.session_engine import SessionEngine
 from test_session_engine import FakeClient, FakeStore
-from hlbot.models import Candle
 
 TOKEN = "t"
 
@@ -31,4 +30,18 @@ def test_backtest_returns_result_no_token_needed():
 def test_backtest_bad_coin_returns_422():
     c = _client()
     r = c.post("/backtest", json={"coin": "NOPE", "capital": 1000.0, "n_candles": 50})
+    assert r.status_code == 422
+
+def test_backtest_empty_candles_returns_422():
+    class EmptyClient(BTClient):
+        def candles(self, coin, interval, start, end): return []
+    eng = SessionEngine(EmptyClient(), FakeStore())
+    c = TestClient(create_app(eng, TOKEN, lambda: {}))
+    r = c.post("/backtest", json={"coin": "ETH", "capital": 1000.0, "n_candles": 50})
+    assert r.status_code == 422
+
+def test_backtest_invalid_params_returns_422():
+    c = _client()
+    r = c.post("/backtest", json={"coin": "ETH", "capital": 1000.0, "n_candles": 50,
+                                  "max_position_notional": 5.0})
     assert r.status_code == 422
