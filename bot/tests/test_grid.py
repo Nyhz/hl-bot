@@ -1,63 +1,65 @@
-from hlbot.models import MarketState, RiskLimits, SessionConfig, Side, ActionType
+from hlbot.models import MarketState, Candle, RiskLimits, SessionConfig, Side, ActionType
 from hlbot.strategy.grid import GridStrategy
 
-def _cfg():
-    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
+def _cfg(**kw):
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0, 30.0)
     return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
-                         grid_n=4, grid_range_pct=0.02)
+                         grid_n=4, grid_range_pct=0.02, **kw)
 
-def test_anchor_sets_symmetric_bounds():
-    g = GridStrategy(_cfg())
-    g.set_anchor(3000.0)
-    assert abs(g.lower - 2940.0) < 1e-6
-    assert abs(g.upper - 3060.0) < 1e-6
-    assert len(g.levels) == 5  # grid_n + 1
+def _candles(vol=10.0, n=40, base=3000.0):
+    # velas con rango ~vol para que ATR ~ vol
+    return [Candle(t=i, open=base, high=base + vol, low=base - vol, close=base, volume=1.0)
+            for i in range(1, n + 1)]
 
-def test_triggers_buys_below_sells_above():
-    g = GridStrategy(_cfg())
-    g.set_anchor(3000.0)
-    ms = MarketState(coin="ETH", mid=3000.0)
-    trs = g.armed_triggers(ms)
-    buys = [t for t in trs if t.side == Side.BUY]
-    sells = [t for t in trs if t.side == Side.SELL]
-    assert all(t.level < 3000.0 for t in buys)
-    assert all(t.level > 3000.0 for t in sells)
+def _ms(mid=3000.0, inventory=0.0, funding=None, vol=10.0):
+    return MarketState(coin="ETH", mid=mid, candles=_candles(vol=vol), funding_rate=funding,
+                       inventory=inventory)
 
-def test_evaluate_range_exit_when_price_below_lower():
+def test_reservation_equals_mid_when_flat():
     g = GridStrategy(_cfg())
-    g.set_anchor(3000.0)
-    ms = MarketState(coin="ETH", mid=2900.0)  # por debajo de lower=2940
-    decisions = g.evaluate(ms)
-    assert len(decisions) == 1
-    assert decisions[0].action == ActionType.CLOSE
-    assert decisions[0].reduce_only is True
+    ms = _ms(inventory=0.0)
+    sigma = g._sigma(ms)
+    assert abs(g.reservation_price(ms, sigma) - ms.mid) < 1e-9
 
-def test_evaluate_places_maker_orders_in_range():
+def test_reservation_below_mid_when_long():
     g = GridStrategy(_cfg())
-    g.set_anchor(3000.0)
-    ms = MarketState(coin="ETH", mid=3000.0)
-    decisions = g.evaluate(ms)
-    assert all(d.action == ActionType.PLACE_LIMIT for d in decisions)
-    # cada rung tiene el notional de la posición configurada (max_position_notional = $10)
-    assert all(abs(d.price * d.size - 10.0) < 1e-6 for d in decisions)
+    ms = _ms(inventory=0.005)   # largo
+    sigma = g._sigma(ms)
+    assert g.reservation_price(ms, sigma) < ms.mid
 
-def test_evaluate_range_exit_when_price_above_upper():
+def test_reservation_above_mid_when_short():
     g = GridStrategy(_cfg())
-    g.set_anchor(3000.0)
-    ms = MarketState(coin="ETH", mid=3100.0)  # por encima de upper=3060
-    decisions = g.evaluate(ms)
-    assert len(decisions) == 1
-    assert decisions[0].action == ActionType.CLOSE
-    assert decisions[0].reduce_only is True
+    ms = _ms(inventory=-0.005)
+    sigma = g._sigma(ms)
+    assert g.reservation_price(ms, sigma) > ms.mid
 
-def test_conditions_expose_both_bounds():
+def test_half_spread_grows_with_volatility():
     g = GridStrategy(_cfg())
-    g.set_anchor(3000.0)
-    ms = MarketState(coin="ETH", mid=3000.0)
-    conds = g.conditions(ms)
-    names = {c.name for c in conds}
-    assert names == {"precio_sobre_limite_inferior", "precio_bajo_limite_superior"}
-    assert all(c.met for c in conds)  # en rango -> ambas cumplidas
-    # cada condicion es internamente consistente (value vs threshold coincide con met)
-    lower_c = next(c for c in conds if c.name == "precio_sobre_limite_inferior")
-    assert (lower_c.value >= lower_c.threshold) == lower_c.met
+    lo = g.half_spread(_ms(vol=5.0), g._sigma(_ms(vol=5.0)))
+    hi = g.half_spread(_ms(vol=40.0), g._sigma(_ms(vol=40.0)))
+    assert hi > lo
+
+def test_funding_positive_targets_short_reservation():
+    # funding positivo (largos pagan) y estando flat -> objetivo corto -> referencia > mid
+    g = GridStrategy(_cfg())
+    ms = _ms(inventory=0.0, funding=0.001)
+    sigma = g._sigma(ms)
+    assert g.reservation_price(ms, sigma) > ms.mid
+
+def test_evaluate_rungs_are_ten_dollars_and_dont_cross_mid():
+    g = GridStrategy(_cfg())
+    ms = _ms(inventory=0.0)
+    ds = [d for d in g.evaluate(ms) if d.action == ActionType.PLACE_LIMIT]
+    assert ds
+    for d in ds:
+        assert abs(d.price * d.size - 10.0) < 1e-6
+        if d.side == Side.BUY:
+            assert d.price < ms.mid
+        else:
+            assert d.price > ms.mid
+
+def test_evaluate_emits_only_place_limit_rungs():
+    g = GridStrategy(_cfg())
+    ms = _ms(inventory=0.0)
+    ds = g.evaluate(ms)
+    assert ds and all(d.action == ActionType.PLACE_LIMIT for d in ds)  # grid no cierra por precio
