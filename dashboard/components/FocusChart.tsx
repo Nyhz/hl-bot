@@ -46,7 +46,8 @@ export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinV
   useEffect(() => {
     const s = seriesRef.current;
     if (!s || mid == null) return;
-    const t = Math.floor(Date.now() / 60000) * 60; // bucket de 1 min en segundos
+    const bucket = Math.floor(Date.now() / 60000) * 60; // bucket de 1 min en segundos
+    const t = Math.max(bucket, lastRef.current?.time ?? bucket);
     const last = lastRef.current;
     const c = (last && last.time === t)
       ? { time: t, open: last.open, high: Math.max(last.high, mid), low: Math.min(last.low, mid), close: mid }

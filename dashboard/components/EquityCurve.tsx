@@ -7,6 +7,7 @@ import { equitySeries } from "@/lib/view";
 export function EquityCurve({ sessionId, equity }: { sessionId: number | null; equity: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const lastTimeRef = useRef<number>(0);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -23,7 +24,11 @@ export function EquityCurve({ sessionId, equity }: { sessionId: number | null; e
     let cancelled = false;
     if (sessionId !== null) {
       api.getEquityCurve(sessionId).then((rows) => {
-        if (!cancelled) series.setData(equitySeries(rows) as never);
+        if (!cancelled) {
+          const data = equitySeries(rows);
+          series.setData(data as never);
+          lastTimeRef.current = rows.length ? rows[rows.length - 1].ts : 0;
+        }
       }).catch(() => {});
     }
     const onResize = () => ref.current && chart.applyOptions({ width: ref.current.clientWidth });
@@ -33,7 +38,16 @@ export function EquityCurve({ sessionId, equity }: { sessionId: number | null; e
 
   useEffect(() => {
     const s = seriesRef.current;
-    if (s && equity > 0) s.update({ time: Math.floor(Date.now() / 1000) as never, value: equity });
+    if (s && equity > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const t = Math.max(now, lastTimeRef.current);
+      try {
+        s.update({ time: t as never, value: equity });
+      } catch (e) {
+        console.warn("EquityCurve series.update skipped:", e);
+      }
+      lastTimeRef.current = t;
+    }
   }, [equity]);
 
   return <div className="panel" ref={ref} style={{ width: "100%" }} />;
