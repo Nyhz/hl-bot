@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { fmtAge, pnlColor, equitySeries } from "../view";
+import { fmtAge, pnlColor, equitySeries, positionView } from "../view";
+import type { Position } from "../types";
 
 describe("view helpers", () => {
   it("fmtAge", () => {
@@ -18,5 +19,19 @@ describe("equitySeries", () => {
   it("maps ts/total_pnl to time/value ascending", () => {
     const out = equitySeries([{ ts: 200, total_pnl: 50.4 }, { ts: 100, total_pnl: 50.0 }]);
     expect(out).toEqual([{ time: 100, value: 50.0 }, { time: 200, value: 50.4 }]);
+  });
+});
+
+describe("positionView", () => {
+  const base: Position = { coin: "ETH", side: "long", leverage: 3, notional: 12, size: 0.004,
+    entry_px: 3000, mark_px: null, unrealized_pnl: 0.07, liq_px: 2000 };
+  it("uses live mid when mark_px null and colors by pnl", () => {
+    const v = positionView(base, 3050);
+    expect(v.markPx).toBe(3050);
+    expect(v.pnlColor).toBe("var(--neon-green)");
+    expect(v.sideLabel).toBe("LONG");
+  });
+  it("falls back to entry when no mid", () => {
+    expect(positionView(base, null).markPx).toBe(3000);
   });
 });
