@@ -69,4 +69,4 @@ def test_step_applies_hourly_funding_long_pays_positive():
     b.set_ts(0)
     b.step("ETH", _candle(3600000, 3000, 3000, 3000, 3000), 0.0001)  # cruza 1 hora, funding +
     assert b.cash < cash0                                        # largo paga funding positivo
-    assert b.funding_total > 0
+    assert b.funding_total < 0                                   # a long paying positive funding gives negative funding_total

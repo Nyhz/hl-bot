@@ -177,7 +177,7 @@ class BacktestBroker:
                 notional = abs(p["size"]) * candle.close
                 pay = funding_rate * notional * (1 if p["size"] > 0 else -1)  # largo paga si funding>0
                 self.cash -= pay
-                self.funding_total += pay
+                self.funding_total -= pay
         self._last_funding_hour = hour
         # 4) avanzar precio/ts
         self._price[coin] = candle.close
