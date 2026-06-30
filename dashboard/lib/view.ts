@@ -54,7 +54,11 @@ export function candleSeries(candles: Candle[]): Candle[] {
 }
 
 export function equitySeries(rows: { ts: number; total_pnl: number }[]): { time: number; value: number }[] {
-  return rows
-    .map((r) => ({ time: r.ts, value: r.total_pnl }))
-    .sort((a, b) => a.time - b.time);
+  const sorted = [...rows].sort((a, b) => a.ts - b.ts);
+  const out: { time: number; value: number }[] = [];
+  for (const r of sorted) {
+    if (out.length && out[out.length - 1].time === r.ts) out[out.length - 1].value = r.total_pnl; // keep last
+    else out.push({ time: r.ts, value: r.total_pnl });
+  }
+  return out;
 }

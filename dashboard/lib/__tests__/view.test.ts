@@ -28,6 +28,11 @@ describe("equitySeries", () => {
     const out = equitySeries([{ ts: 200, total_pnl: 50.4 }, { ts: 100, total_pnl: 50.0 }]);
     expect(out).toEqual([{ time: 100, value: 50.0 }, { time: 200, value: 50.4 }]);
   });
+  it("dedups duplicate timestamps keeping the last value", () => {
+    const s = equitySeries([{ ts: 2, total_pnl: 20 }, { ts: 1, total_pnl: 10 }, { ts: 2, total_pnl: 99 }]);
+    expect(s.map((p) => p.time)).toEqual([1, 2]);
+    expect(s[1].value).toBe(99);
+  });
 });
 
 describe("conditionPct", () => {

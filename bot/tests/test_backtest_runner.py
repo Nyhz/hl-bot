@@ -24,6 +24,11 @@ def test_run_backtest_returns_structure_and_runs_engine():
     # el grid llenó al menos una orden en el rango oscilante
     assert len(res["trades"]) >= 1
 
+def test_equity_curve_has_unique_ascending_timestamps():
+    res = run_backtest("ETH", _oscillating(n=121), [], _cfg(), {"ETH": 4})
+    ts = [p["ts"] for p in res["equity_curve"]]
+    assert ts == sorted(set(ts))            # estrictamente ascendente y sin duplicados
+
 def test_compute_metrics_drawdown_and_net():
     curve = [{"ts": 1, "total_pnl": 1000.0}, {"ts": 2, "total_pnl": 1010.0},
              {"ts": 3, "total_pnl": 990.0}, {"ts": 4, "total_pnl": 1005.0}]

@@ -54,8 +54,12 @@ def run_backtest(coin, candles, funding_rows, cfg, sz_decimals) -> dict:
     # cierre final para realizar PnL y un último punto de equity
     broker.market_close(coin)
     if candles:
-        equity_curve.append({"ts": candles[-1].t // 1000,
-                             "total_pnl": float(broker.user_state()["marginSummary"]["accountValue"])})
+        final_pt = {"ts": candles[-1].t // 1000,
+                    "total_pnl": float(broker.user_state()["marginSummary"]["accountValue"])}
+        if equity_curve and equity_curve[-1]["ts"] == final_pt["ts"]:
+            equity_curve[-1] = final_pt
+        else:
+            equity_curve.append(final_pt)
     metrics = compute_metrics(equity_curve, broker.fills, broker.funding_total)
     return {"metrics": metrics, "equity_curve": equity_curve,
             "trades": broker.fills, "decisions": store.decisions}
