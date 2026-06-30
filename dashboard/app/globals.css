@@ -78,6 +78,6 @@ html, body { overflow-x: hidden; }
 @media (max-width: 1024px) {
   .app-100vh { height: auto; overflow: visible; }
   .trade-main { grid-template-columns: 1fr; }
-  .trade-grid[data-layout] { grid-template-rows: none; }
+  .trade-grid[data-layout] { grid-template-columns: 1fr; grid-template-rows: none; }
   .trade-slot { min-height: 320px; }
 }
