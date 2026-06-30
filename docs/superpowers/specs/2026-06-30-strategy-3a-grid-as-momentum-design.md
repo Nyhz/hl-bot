@@ -63,9 +63,11 @@ de la posición), `f = funding_rate`, `cap = max_coin_notional`.
   (`grid_range_pct` pasa a ser el **clamp de rango máximo**, default 0.02).
 - Tamaño de cada rung: `max_position_notional / price` (= $10), maker/post-only.
 
-**Salida de rango / stop:** se mantiene el comportamiento actual de cierre si el precio se va
-muy lejos, reexpresado sobre el rango clamp (`reservation ± grid_range_pct`): si el `mid` sale de
-ese rango → `CLOSE reduce_only`.
+**Sin range-exit por precio.** Con re-centrado la referencia sigue al `mid`, así que un stop por
+rango quedaría muerto. La protección del grid es: (1) el **cap de inventario** `max_coin_notional`
+(bloquea el crecimiento de la posición), y (2) los **límites de pérdida de sesión** (daily/total →
+auto-close de toda la sesión). `grid_range_pct` solo se usa como **clamp del rango de la escalera**
+(no coloca rungs más allá de `±grid_range_pct` de la referencia).
 
 **Reconciliación a la escalera deseada (cambio en el motor):** hoy el motor solo evita duplicar
 rungs. Ahora, como el grid se re-centra, el motor:
