@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmtAge, pnlColor, equitySeries, positionView, conditionPct } from "../view";
+import { fmtAge, pnlColor, equitySeries, positionView, conditionPct, candleSeries } from "../view";
 import type { Position } from "../types";
 
 describe("view helpers", () => {
@@ -27,6 +27,13 @@ describe("conditionPct", () => {
     expect(conditionPct({ name: "adx", value: 12.5, threshold: 25, met: false })).toBeCloseTo(0.5);
     expect(conditionPct({ name: "adx", value: 30, threshold: 25, met: true })).toBe(1);
     expect(conditionPct({ name: "x", value: 5, threshold: 0, met: true })).toBe(1);
+  });
+});
+
+describe("candleSeries", () => {
+  it("passes through sorted by time", () => {
+    const out = candleSeries([{ time: 2, open: 1, high: 2, low: 1, close: 1.5 }, { time: 1, open: 1, high: 1, low: 1, close: 1 }] as never);
+    expect(out.map((c) => c.time)).toEqual([1, 2]);
   });
 });
 

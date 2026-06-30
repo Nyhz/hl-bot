@@ -1,4 +1,4 @@
-import type { Condition, Position } from "./types";
+import type { Candle, Condition, Position } from "./types";
 
 export function conditionPct(c: Condition): number {
   if (c.met) return 1;
@@ -27,6 +27,10 @@ export function fmtAge(sec: number | null | undefined): string {
 
 export function pnlColor(n: number): string {
   return n < 0 ? "var(--neon-red)" : "var(--neon-green)";
+}
+
+export function candleSeries(candles: Candle[]): Candle[] {
+  return [...candles].sort((a, b) => a.time - b.time);
 }
 
 export function equitySeries(rows: { ts: number; total_pnl: number }[]): { time: number; value: number }[] {
