@@ -480,3 +480,11 @@ def test_decisions_flat_trending_enters_trend():
     ms = MarketState(coin="ETH", mid=3000.0, candles=[], inventory=0.0)  # plano
     ds = eng._decisions_for(ms)
     assert any(d.action == ActionType.PLACE_MARKET for d in ds)  # momentum entra
+
+
+def test_engine_has_lock_and_is_free():
+    import threading
+    eng = SessionEngine(FakeClient(), FakeStore())
+    assert isinstance(eng.lock, type(threading.Lock()))
+    assert eng.lock.acquire(blocking=False) is True   # libre
+    eng.lock.release()

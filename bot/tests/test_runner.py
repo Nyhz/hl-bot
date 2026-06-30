@@ -56,6 +56,25 @@ def test_refresh_account_cache_preserves_fills_without_extras():
     assert c2["equity"] == 49.16
 
 
+def _run_cfg():
+    from hlbot.models import RiskLimits, SessionConfig
+    return SessionConfig(watchlist=[], capital=40.0,
+                         limits=RiskLimits(10.0, 4, 2.0, 5.0, 20.0), grid_n=4, grid_range_pct=0.02)
+
+
+def test_run_tick_executes_under_lock_and_releases():
+    from hlbot.main import run_tick
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_run_cfg())                      # ver helper abajo
+    shared = {}; cache = {"v": {}}; counters = {"loop": 0, "ticks": 0}
+    run_tick(eng, eng.client, eng.store, shared, cache, counters)   # un tick, síncrono
+    assert counters["loop"] == 1
+    assert eng.lock.acquire(blocking=False) is True   # el lock quedó libre tras el tick
+    eng.lock.release()
+
+
 def test_refresh_records_fills_dedup(tmp_path):
     store = Store(str(tmp_path / "t.db")); store.init_schema()
     sid = store.create_session(["BTC"], 40.0, mode="testnet")

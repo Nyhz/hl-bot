@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 import time
 from hlbot.models import (
     MarketState, SessionState, SessionConfig, ActionType, Side, to_dict,
@@ -13,6 +14,7 @@ class SessionEngine:
     def __init__(self, client, store):
         self.client = client
         self.store = store
+        self.lock = threading.Lock()
         self.state = SessionState.IDLE
         self.paused = False
         self.cfg: SessionConfig | None = None
