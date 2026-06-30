@@ -5,11 +5,12 @@ import type { CoinView, Trigger } from "@/lib/types";
 import { api } from "@/lib/api";
 import { candleSeries } from "@/lib/view";
 
-export function FocusChart({ coin, coinView }: { coin: string | null; coinView: CoinView | undefined }) {
+export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinView: CoinView | undefined; mid: number | null }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const triggersRef = useRef<Trigger[]>([]);
+  const lastRef = useRef<{ time: number; open: number; high: number; low: number; close: number } | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -27,14 +28,32 @@ export function FocusChart({ coin, coinView }: { coin: string | null; coinView: 
     return () => { window.removeEventListener("resize", onResize); chart.remove(); chartRef.current = null; seriesRef.current = null; };
   }, []);
 
-  // Las velas se recargan al cambiar de par (coin). Mejora futura: append en vivo de la vela en formación con series.update().
+  // Las velas se recargan al cambiar de par (coin).
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !coin) return;
     let cancelled = false;
-    api.getCandles(coin).then((cs) => { if (!cancelled) series.setData(candleSeries(cs) as never); }).catch((e) => console.error("getCandles", e));
+    api.getCandles(coin).then((cs) => {
+      if (!cancelled) {
+        const sorted = candleSeries(cs);
+        series.setData(sorted as never);
+        lastRef.current = sorted.length > 0 ? (sorted[sorted.length - 1] as { time: number; open: number; high: number; low: number; close: number }) : null;
+      }
+    }).catch((e) => console.error("getCandles", e));
     return () => { cancelled = true; };
   }, [coin]);
+
+  useEffect(() => {
+    const s = seriesRef.current;
+    if (!s || mid == null) return;
+    const t = Math.floor(Date.now() / 60000) * 60; // bucket de 1 min en segundos
+    const last = lastRef.current;
+    const c = (last && last.time === t)
+      ? { time: t, open: last.open, high: Math.max(last.high, mid), low: Math.min(last.low, mid), close: mid }
+      : { time: t, open: mid, high: mid, low: mid, close: mid };
+    lastRef.current = c;
+    s.update(c as never);
+  }, [mid]);
 
   const triggers = coinView?.triggers ?? [];
   const triggerKey = triggers.map((t) => `${t.level}:${t.side}:${t.action}`).join("|");
