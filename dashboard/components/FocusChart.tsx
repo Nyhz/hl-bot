@@ -1,11 +1,11 @@
 "use client";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi } from "lightweight-charts";
 import type { CoinView, Trigger } from "@/lib/types";
 import { api } from "@/lib/api";
 import { candleSeries, fmtFunding, fundingColor } from "@/lib/view";
 
-export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinView: CoinView | undefined; mid: number | null }) {
+export function FocusChart({ coin, coinView, mid, fill }: { coin: string | null; coinView: CoinView | undefined; mid: number | null; fill?: boolean }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -14,8 +14,10 @@ export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinV
 
   useEffect(() => {
     if (!ref.current) return;
-    const chart = createChart(ref.current, {
-      height: 320, layout: { background: { color: "transparent" }, textColor: "#8a8f98" },
+    const el = ref.current;
+    const chart = createChart(el, {
+      height: fill ? (el.clientHeight || 240) : 320,
+      layout: { background: { color: "transparent" }, textColor: "#8a8f98" },
       grid: { vertLines: { color: "#14171c" }, horzLines: { color: "#14171c" } },
       rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
     });
@@ -23,13 +25,14 @@ export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinV
       upColor: "#00ff88", downColor: "#ff4466", wickUpColor: "#00ff88", wickDownColor: "#ff4466", borderVisible: false,
     });
     chartRef.current = chart; seriesRef.current = series;
-    const el = ref.current;
-    const fit = () => chart.applyOptions({ width: el.clientWidth });
+    const fit = () => chart.applyOptions(fill
+      ? { width: el.clientWidth, height: el.clientHeight }
+      : { width: el.clientWidth });
     fit();
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => { ro.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
-  }, []);
+  }, [fill]);
 
   // Las velas se recargan al cambiar de par (coin).
   useEffect(() => {
@@ -82,15 +85,19 @@ export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinV
     return () => { lines.forEach((l) => series.removePriceLine(l)); };
   }, [triggerKey]);
 
+  const rootStyle: React.CSSProperties = fill
+    ? { display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }
+    : { padding: 8 };
+  const chartStyle: React.CSSProperties = fill
+    ? { width: "100%", flex: 1, minHeight: 0 }
+    : { width: "100%" };
   return (
-    <div className="panel" style={{ padding: 8 }}>
+    <div className={fill ? undefined : "panel"} style={rootStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
         <span className="muted" style={{ fontSize: 11 }}>{coin ?? "—"} · live{coinView ? ` · ${coinView.mode}` : ""}</span>
-        <span style={{ fontSize: 11, color: fundingColor(coinView?.funding) }} title="funding horario">
-          fund {fmtFunding(coinView?.funding)}
-        </span>
+        <span style={{ fontSize: 11, color: fundingColor(coinView?.funding) }} title="funding horario">fund {fmtFunding(coinView?.funding)}</span>
       </div>
-      <div ref={ref} style={{ width: "100%" }} />
+      <div ref={ref} style={chartStyle} />
     </div>
   );
 }
