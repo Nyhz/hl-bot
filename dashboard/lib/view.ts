@@ -8,3 +8,9 @@ export function fmtAge(sec: number | null | undefined): string {
 export function pnlColor(n: number): string {
   return n < 0 ? "var(--neon-red)" : "var(--neon-green)";
 }
+
+export function equitySeries(rows: { ts: number; total_pnl: number }[]): { time: number; value: number }[] {
+  return rows
+    .map((r) => ({ time: r.ts, value: r.total_pnl }))
+    .sort((a, b) => a.time - b.time);
+}
