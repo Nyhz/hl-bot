@@ -1,6 +1,9 @@
 from __future__ import annotations
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
+from typing import Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -76,11 +79,26 @@ MIGRATIONS = [
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # Una sola conexión persistente para todo el proceso. Antes se abría
+        # una por operación y nunca se cerraba (el `with conn` solo hace
+        # commit/rollback, no close), fugando descriptores hasta agotar el
+        # límite del proceso -> "unable to open database file".
+        # check_same_thread=False porque el tick va en asyncio.to_thread y la
+        # API la usa desde otros hilos; el lock serializa los accesos.
+        self._lock = threading.Lock()
+        self._db = sqlite3.connect(db_path, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA journal_mode=WAL")
 
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            try:
+                yield self._db
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
 
     def init_schema(self) -> None:
         with self._conn() as conn:

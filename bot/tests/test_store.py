@@ -1,4 +1,57 @@
+import threading
+
+import hlbot.store as store_mod
 from hlbot.store import Store
+
+def test_reuses_single_connection_no_fd_leak(tmp_path, monkeypatch):
+    # Regresión: cada operación abría una conexión sqlite nueva y nunca la
+    # cerraba (el `with conn` solo hace commit, no close) -> fuga de FDs que
+    # acababa en "unable to open database file" al llegar al límite del proceso.
+    real_connect = store_mod.sqlite3.connect
+    opened = []
+
+    def tracking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(store_mod.sqlite3, "connect", tracking_connect)
+
+    store = Store(str(tmp_path / "t.db"))
+    store.init_schema()
+    sid = store.create_session(["ETH"], 40.0)
+    for i in range(50):
+        store.record_pnl_snapshot(sid, float(i))
+        store.get_pnl_snapshots(sid)
+
+    assert len(opened) == 1, (
+        f"se abrieron {len(opened)} conexiones; debe reutilizar una sola"
+    )
+
+def test_concurrent_access_from_threads(tmp_path):
+    # La conexión única se comparte entre hilos (tick va en asyncio.to_thread
+    # + la API): debe ser segura, sin "objects created in a thread..." ni
+    # corrupción.
+    store = Store(str(tmp_path / "t.db"))
+    store.init_schema()
+    sid = store.create_session(["ETH"], 40.0)
+    errors: list[Exception] = []
+
+    def worker(n: int):
+        try:
+            for i in range(20):
+                store.record_pnl_snapshot(sid, float(n * 100 + i))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    assert len(store.get_pnl_snapshots(sid)) == 80
 
 def test_create_and_query_session(tmp_path):
     store = Store(str(tmp_path / "t.db"))
