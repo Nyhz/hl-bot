@@ -15,7 +15,7 @@ export function Watchlist({ coins, positions, onFocus }: {
         <div key={coin} onClick={() => onFocus?.(coin)} style={{ padding: "8px 4px", borderBottom: "1px solid #1c1f26", cursor: "pointer" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <span><b>{coin}</b> <span className="muted">{cv.mode}</span> <span className="muted">{cv.mid}</span></span>
-            {cv.armed && <span className="glow" style={{ color: "var(--neon-green)", fontWeight: 700 }}>ARMED</span>}
+            {cv.armed && <span className="armed-glow" style={{ color: "var(--neon-green)", fontWeight: 700 }}>ARMED</span>}
           </div>
           <div style={{ marginTop: 6 }}>
             {cv.conditions.map((c) => <Gauge key={c.name} label={c.name} pct={conditionPct(c)} met={c.met} />)}

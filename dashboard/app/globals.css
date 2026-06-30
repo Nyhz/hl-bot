@@ -21,3 +21,7 @@ html, body {
 .muted { color: var(--muted); }
 .panel { background: var(--panel); border: 1px solid #1c1f26; border-radius: 8px; }
 .glow { text-shadow: 0 0 8px currentColor; }
+@keyframes livePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes armedGlow { 0%,100% { text-shadow: 0 0 4px currentColor; } 50% { text-shadow: 0 0 12px currentColor; } }
+.live-pulse { animation: livePulse 1.6s ease-in-out infinite; }
+.armed-glow { animation: armedGlow 1.2s ease-in-out infinite; }

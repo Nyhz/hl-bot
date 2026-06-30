@@ -1,12 +1,14 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { createChart, AreaSeries, type IChartApi } from "lightweight-charts";
+import { createChart, AreaSeries, type IChartApi, type ISeriesApi } from "lightweight-charts";
 import { api } from "@/lib/api";
 import { equitySeries } from "@/lib/view";
 
-export function EquityCurve({ sessionId }: { sessionId: number | null }) {
+export function EquityCurve({ sessionId, equity }: { sessionId: number | null; equity: number }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  // La curva se recarga cuando cambia la sesión (sessionId). Mejora futura (2b.3): append en vivo del punto de equity con series.update().
+  const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const lastTimeRef = useRef<number>(0);
+
   useEffect(() => {
     if (!ref.current) return;
     const chart: IChartApi = createChart(ref.current, {
@@ -18,15 +20,35 @@ export function EquityCurve({ sessionId }: { sessionId: number | null }) {
     const series = chart.addSeries(AreaSeries, {
       lineColor: "#00ff88", topColor: "rgba(0,255,136,0.25)", bottomColor: "rgba(0,255,136,0.02)",
     });
+    seriesRef.current = series;
     let cancelled = false;
     if (sessionId !== null) {
       api.getEquityCurve(sessionId).then((rows) => {
-        if (!cancelled) series.setData(equitySeries(rows) as never);
+        if (!cancelled) {
+          const data = equitySeries(rows);
+          series.setData(data as never);
+          lastTimeRef.current = rows.length ? rows[rows.length - 1].ts : 0;
+        }
       }).catch(() => {});
     }
     const onResize = () => ref.current && chart.applyOptions({ width: ref.current.clientWidth });
     onResize(); window.addEventListener("resize", onResize);
-    return () => { cancelled = true; window.removeEventListener("resize", onResize); chart.remove(); };
+    return () => { cancelled = true; window.removeEventListener("resize", onResize); chart.remove(); seriesRef.current = null; };
   }, [sessionId]);
+
+  useEffect(() => {
+    const s = seriesRef.current;
+    if (s && equity > 0) {
+      const now = Math.floor(Date.now() / 1000);
+      const t = Math.max(now, lastTimeRef.current);
+      try {
+        s.update({ time: t as never, value: equity });
+      } catch (e) {
+        console.warn("EquityCurve series.update skipped:", e);
+      }
+      lastTimeRef.current = t;
+    }
+  }, [equity]);
+
   return <div className="panel" ref={ref} style={{ width: "100%" }} />;
 }
