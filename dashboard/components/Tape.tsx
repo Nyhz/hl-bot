@@ -10,7 +10,7 @@ export function Tape({ events }: { events: TapeEvent[] }) {
       <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>TAPE</div>
       {events.length === 0 && <div className="muted" style={{ fontSize: 12 }}>sin actividad</div>}
       {events.map((e, i) => (
-        <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, padding: "3px 0", fontFamily: "Menlo, monospace" }}>
+        <div key={`${e.ts}-${e.kind}-${e.coin ?? ""}-${i}`} style={{ display: "flex", gap: 10, fontSize: 12, padding: "3px 0", fontFamily: "Menlo, monospace" }}>
           <span className="muted">{new Date(e.ts * 1000).toLocaleTimeString()}</span>
           <span style={{ color: kindColor(e.kind), textTransform: "uppercase", width: 64 }}>{e.kind}</span>
           <span>{e.coin ?? ""}</span>

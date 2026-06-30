@@ -2,7 +2,7 @@ import type { Candle, Condition, Position } from "./types";
 
 export function conditionPct(c: Condition): number {
   if (c.met) return 1;
-  if (!c.threshold) return c.met ? 1 : 0;
+  if (!c.threshold) return 0;
   const r = Math.abs(c.value) / Math.abs(c.threshold);
   return Math.max(0, Math.min(1, r));
 }
@@ -20,6 +20,7 @@ export function positionView(pos: Position, mid: number | null) {
 
 export function fmtAge(sec: number | null | undefined): string {
   if (sec === null || sec === undefined || Number.isNaN(sec)) return "—";
+  if (sec < 0) return "—";
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}m ${String(s).padStart(2, "0")}s`;

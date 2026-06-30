@@ -6,6 +6,7 @@ import { equitySeries } from "@/lib/view";
 
 export function EquityCurve({ sessionId }: { sessionId: number | null }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // La curva se recarga cuando cambia la sesión (sessionId). Mejora futura (2b.3): append en vivo del punto de equity con series.update().
   useEffect(() => {
     if (!ref.current) return;
     const chart: IChartApi = createChart(ref.current, {

@@ -27,6 +27,7 @@ export function FocusChart({ coin, coinView }: { coin: string | null; coinView: 
     return () => { window.removeEventListener("resize", onResize); chart.remove(); chartRef.current = null; seriesRef.current = null; };
   }, []);
 
+  // Las velas se recargan al cambiar de par (coin). Mejora futura: append en vivo de la vela en formación con series.update().
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !coin) return;
