@@ -25,21 +25,21 @@ export default function Home() {
     <main className="app-100vh">
       <HeaderBar snapshot={snapshot} connected={connected} state={sessionState} onLaunch={() => setLaunchOpen(true)} />
       {snapshot ? (
-        <div className="trade-body">
-          <div className="top-band">
-            <EquityHero account={snapshot.account} />
-            <EquityCurve sessionId={snapshot.session_id} equity={snapshot.account.equity} />
-            <StatTiles account={snapshot.account} />
-            <AttributionPanel account={snapshot.account} />
-          </div>
-          <div className="trade-main">
+        <div className="trade-shell">
+          <div className="left-col">
+            <div className="top-band">
+              <EquityHero account={snapshot.account} />
+              <EquityCurve sessionId={snapshot.session_id} equity={snapshot.account.equity} />
+              <StatTiles account={snapshot.account} />
+            </div>
             <div className="center-stage">
               <TradeGrid positions={snapshot.positions} coins={snapshot.coins} watchlistCount={snapshot.watchlist.length} />
             </div>
-            <div className="right-rail">
-              <Watchlist coins={snapshot.coins} positions={snapshot.positions} />
-              <Tape events={snapshot.tape_recent} />
-            </div>
+          </div>
+          <div className="right-rail">
+            <AttributionPanel account={snapshot.account} />
+            <Watchlist coins={snapshot.coins} positions={snapshot.positions} />
+            <Tape events={snapshot.tape_recent} />
           </div>
         </div>
       ) : (

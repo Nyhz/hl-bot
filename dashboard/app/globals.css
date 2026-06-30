@@ -59,10 +59,14 @@ html, body { overflow-x: hidden; }
 
 /* ---- Trade dashboard 100vh ---- */
 .app-100vh { height: 100vh; display: flex; flex-direction: column; gap: 8px; padding: 8px; overflow: hidden; }
-.trade-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
-.top-band { display: grid; grid-template-columns: minmax(200px,1fr) minmax(280px,1.6fr) minmax(240px,1.4fr) minmax(190px,1fr); gap: 8px; flex: 0 0 auto; }
-.trade-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0,3fr) minmax(260px,1fr); gap: 8px; }
-.center-stage { min-width: 0; min-height: 0; display: flex; }
+/* 2 columnas: izquierda (banda + grid de trades), derecha (raíl: atribución + watchlist + tape) */
+.trade-shell { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0,3fr) minmax(300px,1fr); gap: 8px; }
+.left-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.top-band { display: grid; grid-template-columns: minmax(190px,1fr) minmax(260px,1.5fr) minmax(0,2.2fr); gap: 8px; flex: 0 0 auto; }
+/* stats: las cards llenan el alto de la banda y se estiran hasta el final, con el contenido centrado */
+.top-band .stat-tiles { height: 100%; grid-auto-rows: 1fr; }
+.top-band .stat-tiles .panel { display: flex; flex-direction: column; justify-content: center; }
+.center-stage { flex: 1; min-width: 0; min-height: 0; display: flex; }
 .right-rail { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .right-rail > * { min-height: 0; overflow: auto; }
 .trade-grid { flex: 1; min-height: 0; width: 100%; display: grid; gap: 8px; }
@@ -77,7 +81,7 @@ html, body { overflow-x: hidden; }
 @media (max-width: 1100px) { .top-band { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 1024px) {
   .app-100vh { height: auto; overflow: visible; }
-  .trade-main { grid-template-columns: 1fr; }
+  .trade-shell { grid-template-columns: 1fr; }
   .trade-grid[data-layout] { grid-template-columns: 1fr; grid-template-rows: none; }
   .trade-slot { min-height: 320px; }
 }
