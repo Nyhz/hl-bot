@@ -12,9 +12,11 @@ import { FocusChart } from "@/components/FocusChart";
 import { Tape } from "@/components/Tape";
 import { LaunchPanel } from "@/components/LaunchPanel";
 import { SessionControls } from "@/components/SessionControls";
+import { useEventFeedback } from "@/hooks/useEventFeedback";
 
 export default function Home() {
   const { snapshot, connected } = useLiveSnapshot();
+  useEventFeedback(snapshot);
   const [focusCoin, setFocusCoin] = useState<string | null>(null);
   const [coinsList, setCoinsList] = useState<{ name: string }[]>([]);
 
