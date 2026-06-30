@@ -9,6 +9,8 @@ from hlbot.models import SessionConfig, RiskLimits
 from hlbot.session_engine import SessionEngine
 from hlbot.account import merge_tape, format_candles
 from hlbot.track_record import session_summary, global_stats
+from hlbot.backtest.data import fetch_candles, fetch_funding
+from hlbot.backtest.runner import run_backtest
 
 LIQUID_MAJORS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
 MAX_OPEN_CAP = 4  # tope duro de posiciones simultaneas, no editable
@@ -34,6 +36,21 @@ class LaunchBody(BaseModel):
 
 class KillBody(BaseModel):
     confirm: bool
+
+
+class BacktestBody(BaseModel):
+    coin: str
+    capital: float = 40.0
+    interval: str = "1m"
+    n_candles: int = 1000
+    grid_n: int = 4
+    grid_range_pct: float = 0.02
+    skew_strength: float = 1.5
+    spread_vol_mult: float = 0.5
+    adx_threshold: float = 25.0
+    atr_stop_mult: float = 2.0
+    max_position_notional: float = 10.0
+    max_coin_notional: float = 30.0
 
 
 def create_app(engine: SessionEngine, control_token: str,
@@ -185,5 +202,31 @@ def create_app(engine: SessionEngine, control_token: str,
     def stats_global():
         summaries = [_summary_for(s) for s in engine.store.list_sessions()]
         return global_stats(summaries)
+
+    @app.post("/backtest")
+    def backtest(body: BacktestBody):
+        sz = getattr(engine.client, "sz_decimals", {})
+        if body.coin not in sz:
+            raise HTTPException(status_code=422, detail=f"coin desconocida: {body.coin}")
+        n = max(1, min(body.n_candles, 5000))
+        candles = fetch_candles(engine.client, body.coin, body.interval, n)
+        if not candles:
+            raise HTTPException(status_code=422, detail="sin datos de velas")
+        funding = fetch_funding(engine.client, body.coin, candles[0].t)
+        limits = RiskLimits(
+            max_position_notional=body.max_position_notional,
+            max_open_positions=4, max_leverage=2.0,
+            daily_loss_limit=1e12, total_loss_limit=1e12,   # sin auto-close en backtest
+            max_coin_notional=body.max_coin_notional)
+        try:
+            cfg = SessionConfig(
+                watchlist=[body.coin], capital=body.capital, limits=limits,
+                grid_n=body.grid_n, grid_range_pct=body.grid_range_pct,
+                skew_strength=body.skew_strength, spread_vol_mult=body.spread_vol_mult,
+                adx_threshold=body.adx_threshold, atr_stop_mult=body.atr_stop_mult)
+            result = run_backtest(body.coin, candles, funding, cfg, sz)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return result
 
     return app
