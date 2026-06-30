@@ -11,7 +11,7 @@ export function metricRows(m: BacktestMetrics): { label: string; value: string; 
     { label: "fees", value: fmtUsd(-m.fees, 3), color: "var(--neon-red)" },
     { label: "funding", value: fmtUsd(m.funding, 3), color: pnlColor(m.funding) },
     { label: "max drawdown", value: fmtUsd(-m.max_drawdown), color: "var(--neon-red)" },
-    { label: "trades", value: String(m.n_trades) },
+    { label: "trades (cierres)", value: String(m.n_trades) },
     { label: "win rate", value: fmtPct(m.win_rate), color: "var(--neon-green)" },
   ];
 }
@@ -31,15 +31,22 @@ export function BacktestResults({ result }: { result: BacktestResult }) {
       <EquityCurve key={`${result.equity_curve.length}:${result.equity_curve[0]?.ts ?? 0}`}
                    sessionId={null} equity={0} seed={result.equity_curve} />
       <div className="panel" style={{ padding: 12 }}>
-        <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>TRADES ({result.trades.length})</div>
-        {result.trades.slice(-50).map((t, i) => (
-          <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, padding: "2px 0" }}>
-            <span className="muted">{new Date(t.ts * 1000).toLocaleString()}</span>
-            <span style={{ width: 90 }}>{t.dir}</span>
-            <span className="muted">@{t.price}</span>
-            <span style={{ color: pnlColor(t.closed_pnl), marginLeft: "auto" }}>{fmtUsd(t.closed_pnl)}</span>
-          </div>
-        ))}
+        <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>
+          EJECUCIONES ({result.trades.length}) · el PnL se realiza al cerrar (las aperturas van a —)
+        </div>
+        {result.trades.slice(-50).map((t, i) => {
+          const isClose = t.dir.includes("Close");
+          return (
+            <div key={i} style={{ display: "flex", gap: 10, fontSize: 12, padding: "2px 0" }}>
+              <span className="muted">{new Date(t.ts * 1000).toLocaleString()}</span>
+              <span style={{ width: 90 }}>{t.dir}</span>
+              <span className="muted">@{t.price}</span>
+              <span style={{ marginLeft: "auto", color: isClose ? pnlColor(t.closed_pnl) : "var(--muted)" }}>
+                {isClose ? fmtUsd(t.closed_pnl) : "—"}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
