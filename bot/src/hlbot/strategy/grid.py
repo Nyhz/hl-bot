@@ -18,11 +18,11 @@ class GridStrategy:
         self.anchor = mid
 
     def _sigma(self, ms: MarketState) -> float:
+        if len(ms.candles) < self.cfg.atr_period + 1:
+            return 0.0
         closes = [c.close for c in ms.candles]
         highs = [c.high for c in ms.candles]
         lows = [c.low for c in ms.candles]
-        if len(closes) < self.cfg.atr_period + 1:
-            return 0.0
         return atr(highs, lows, closes, self.cfg.atr_period)[-1]
 
     def _phi_target(self, ms: MarketState) -> float:
@@ -48,13 +48,13 @@ class GridStrategy:
     def _rung_size(self, price: float) -> float:
         return self.cfg.limits.max_position_notional / price
 
-    def _ladder(self, ms: MarketState) -> tuple[float, list[tuple[float, Side]]]:
+    def _ladder(self, ms: MarketState) -> tuple[float, float, list[tuple[float, Side]]]:
         sigma = self._sigma(ms)
         res = self.reservation_price(ms, sigma)
         h = self.half_spread(ms, sigma)
         rungs: list[tuple[float, Side]] = []
         if h <= 0:
-            return res, rungs
+            return sigma, res, rungs
         max_dist = self.cfg.grid_range_pct * res
         for i in range(1, self.cfg.grid_n + 1):
             buy = res - i * h
@@ -63,19 +63,17 @@ class GridStrategy:
                 rungs.append((buy, Side.BUY))
             if sell > ms.mid and (sell - res) <= max_dist:
                 rungs.append((sell, Side.SELL))
-        return res, rungs
+        return sigma, res, rungs
 
     def desired_prices(self, ms: MarketState) -> list[float]:
-        _, rungs = self._ladder(ms)
+        _, _, rungs = self._ladder(ms)
         return [p for p, _ in rungs]
 
     def evaluate(self, ms: MarketState) -> list[Decision]:
         # Sin range-exit por precio: con re-centrado la referencia sigue al mid, así que
         # esa salida quedaría muerta. La protección es el cap de inventario
         # (max_coin_notional, bloquea crecimiento) + los límites de pérdida de sesión (auto-close).
-        sigma = self._sigma(ms)
-        res = self.reservation_price(ms, sigma)
-        _, rungs = self._ladder(ms)
+        sigma, res, rungs = self._ladder(ms)
         out: list[Decision] = []
         for price, side in rungs:
             out.append(Decision(ms.coin, ActionType.PLACE_LIMIT, side=side,
@@ -84,17 +82,15 @@ class GridStrategy:
         return out
 
     def armed_triggers(self, ms: MarketState) -> list[Trigger]:
-        _, rungs = self._ladder(ms)
+        _, _, rungs = self._ladder(ms)
         return [Trigger(ms.coin, p, s, "place_limit",
                         f"{'compra' if s == Side.BUY else 'venta'} maker en {p:.4f}")
                 for p, s in rungs]
 
     def conditions(self, ms: MarketState) -> list[Condition]:
-        sigma = self._sigma(ms)
-        res = self.reservation_price(ms, sigma)
+        sigma, res, rungs = self._ladder(ms)
         max_dist = self.cfg.grid_range_pct * res
-        _, rungs = self._ladder(ms)
         return [
             Condition("en_rango", abs(ms.mid - res), max_dist, abs(ms.mid - res) <= max_dist),
-            Condition("rungs_activos", float(len(rungs)), 1.0, len(rungs) > 0),
+            Condition("rungs_activos", float(len(rungs)), 0.0, len(rungs) > 0),
         ]
