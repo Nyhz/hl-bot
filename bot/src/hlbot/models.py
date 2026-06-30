@@ -76,6 +76,9 @@ class RiskLimits:
     max_leverage: float
     daily_loss_limit: float
     total_loss_limit: float
+    # Tope de notional (posición abierta) por moneda. Default permisivo: el cap real
+    # de producción llega desde el form/API; aquí no estorba a los tests.
+    max_coin_notional: float = 1e9
 
 
 @dataclass

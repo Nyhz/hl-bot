@@ -3,9 +3,11 @@ import { useState } from "react";
 import { buildLaunchBody, postControl, type LaunchForm } from "@/lib/control";
 import { toast } from "sonner";
 
+const MAX_OPEN = 4;  // tope duro de posiciones simultáneas (fijado en el servidor)
 const DEFAULTS: LaunchForm = {
   watchlist: [], capital: 40, gridN: 4, gridRangePct: 0.02, adxThreshold: 25,
-  maxPositionNotional: 15, maxOpenPositions: 3, maxLeverage: 2, dailyLossLimit: 5, totalLossLimit: 20,
+  maxPositionNotional: 10, maxOpenPositions: MAX_OPEN, maxLeverage: 2, maxCoinNotional: 30,
+  dailyLossLimit: 5, totalLossLimit: 20,
 };
 
 export function LaunchPanel({ coins, state }: { coins: { name: string }[]; state: string }) {
@@ -43,15 +45,16 @@ export function LaunchPanel({ coins, state }: { coins: { name: string }[]; state
             ))}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 12 }}>
+            <label>posición $ (≥10) <input type="number" min={10} step={1} defaultValue={f.maxPositionNotional} onChange={num("maxPositionNotional")} style={inputS} /></label>
             <label>capital <input type="number" defaultValue={f.capital} onChange={num("capital")} style={inputS} /></label>
             <label>grid_n <input type="number" defaultValue={f.gridN} onChange={num("gridN")} style={inputS} /></label>
-            <label>max pos $ <input type="number" defaultValue={f.maxPositionNotional} onChange={num("maxPositionNotional")} style={inputS} /></label>
-            <label>max abiertas <input type="number" defaultValue={f.maxOpenPositions} onChange={num("maxOpenPositions")} style={inputS} /></label>
             <label>max lev <input type="number" defaultValue={f.maxLeverage} onChange={num("maxLeverage")} style={inputS} /></label>
+            <label>cap moneda $ <input type="number" defaultValue={f.maxCoinNotional} onChange={num("maxCoinNotional")} style={inputS} /></label>
             <label>adx umbral <input type="number" defaultValue={f.adxThreshold} onChange={num("adxThreshold")} style={inputS} /></label>
             <label>pérdida diaria <input type="number" defaultValue={f.dailyLossLimit} onChange={num("dailyLossLimit")} style={inputS} /></label>
             <label>pérdida total <input type="number" defaultValue={f.totalLossLimit} onChange={num("totalLossLimit")} style={inputS} /></label>
           </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>máx {MAX_OPEN} posiciones simultáneas (fijo)</div>
           <button onClick={launch} disabled={busy}
             style={{ marginTop: 10, width: "100%", padding: 10, border: "none", borderRadius: 6,
               background: "var(--neon-green)", color: "#000", fontWeight: 700, cursor: "pointer" }}>

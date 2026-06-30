@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi } from "lightweight-charts";
 import type { CoinView, Trigger } from "@/lib/types";
 import { api } from "@/lib/api";
-import { candleSeries } from "@/lib/view";
+import { candleSeries, fmtFunding, fundingColor } from "@/lib/view";
 
 export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinView: CoinView | undefined; mid: number | null }) {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -84,7 +84,12 @@ export function FocusChart({ coin, coinView, mid }: { coin: string | null; coinV
 
   return (
     <div className="panel" style={{ padding: 8 }}>
-      <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>{coin ?? "—"} · live</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+        <span className="muted" style={{ fontSize: 11 }}>{coin ?? "—"} · live{coinView ? ` · ${coinView.mode}` : ""}</span>
+        <span style={{ fontSize: 11, color: fundingColor(coinView?.funding) }} title="funding horario">
+          fund {fmtFunding(coinView?.funding)}
+        </span>
+      </div>
       <div ref={ref} style={{ width: "100%" }} />
     </div>
   );

@@ -26,14 +26,19 @@ class SessionEngine:
         self.trend_open: set[str] = set()
         self.stops_placed: set[str] = set()
         self.trend_confirmed: set[str] = set()
+        self.trend_regime: set[str] = set()
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
             raise RuntimeError(f"no se puede lanzar en estado {self.state}")
-        if cfg.grid_n * 10.0 > cfg.capital:
+        pos = cfg.limits.max_position_notional
+        if pos < 10.0:
+            raise ValueError(
+                f"posicion {pos} por debajo del minimo de $10 de Hyperliquid")
+        if cfg.grid_n * pos > cfg.capital:
             raise ValueError(
                 f"capital {cfg.capital} insuficiente para grid_n={cfg.grid_n} "
-                f"(necesita >= {cfg.grid_n * 10.0})")
+                f"a ${pos}/posicion (necesita >= {cfg.grid_n * pos})")
         self.cfg = cfg
         self.risk = RiskManager(cfg.limits)
         testnet = getattr(getattr(self.client, "cfg", None), "testnet", True)
@@ -46,6 +51,12 @@ class SessionEngine:
             g.set_anchor(self.client.mid(coin))
             self.grids[coin] = g
             self.trends[coin] = TrendOverlayStrategy(cfg)
+            # Fija el leverage máximo (isolated) por moneda; no bloquea el launch si falla.
+            try:
+                self.client.set_leverage(coin, int(cfg.limits.max_leverage))
+            except Exception as e:
+                self.store.record_risk_event(
+                    self.session_id, "leverage", f"no se pudo fijar leverage en {coin}: {e}")
         self.session_start_value = self._account_value()
         self.session_started_at = int(time.time())
         self.day_anchor_value = self.session_start_value
@@ -53,6 +64,7 @@ class SessionEngine:
         self.trend_open = set()
         self.stops_placed = set()
         self.trend_confirmed = set()
+        self.trend_regime = set()
         self.paused = False
         self.state = SessionState.SCANNING
 
@@ -89,6 +101,7 @@ class SessionEngine:
         self.trend_open = set()
         self.stops_placed = set()
         self.trend_confirmed = set()
+        self.trend_regime = set()
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
@@ -109,19 +122,6 @@ class SessionEngine:
         step = (2 * self.cfg.grid_range_pct * ms.mid) / self.cfg.grid_n
         tol = step / 2
         return any(abs(r - d.price) <= tol for r in resting)
-
-    def _open_positions_count(self) -> int:
-        state = self.client.user_state()
-        return len(state.get("assetPositions", []))
-
-    def _position_coins(self) -> set[str]:
-        state = self.client.user_state()
-        out: set[str] = set()
-        for p in state.get("assetPositions", []):
-            coin = p.get("position", {}).get("coin")
-            if coin:
-                out.add(coin)
-        return out
 
     def _account_value(self) -> float:
         state = self.client.user_state()
@@ -147,12 +147,40 @@ class SessionEngine:
             self.paused = True
             self.close()
 
+    def _position_notionals(self, state: dict) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for p in state.get("assetPositions", []):
+            pos = p.get("position", {}) or {}
+            coin = pos.get("coin")
+            if coin:
+                out[coin] = abs(float(pos.get("positionValue", 0) or 0))
+        return out
+
+    def _risk_ok(self, notional: float, n_open: int, equity: float,
+                 gross: float, coin_notional: float) -> bool:
+        # Leverage REAL = (notional bruto abierto + esta orden) / equity de la cuenta.
+        lev = (gross + notional) / equity if equity > 0 else 1e9
+        ok, reason = self.risk.can_open(notional, n_open, lev)
+        if not ok:
+            self.store.record_risk_event(self.session_id, "rechazo", reason)
+            return False
+        if coin_notional + notional > self.cfg.limits.max_coin_notional:
+            self.store.record_risk_event(
+                self.session_id, "rechazo", "excede max_coin_notional")
+            return False
+        return True
+
     def tick(self, market_states: dict[str, MarketState]) -> None:
         if self.state == SessionState.IDLE or self.cfg is None:
             return
         self._check_loss_limits()
-        n_open = self._open_positions_count()
-        open_coins = self._position_coins()
+        state = self.client.user_state()
+        asset_positions = state.get("assetPositions", [])
+        n_open = len(asset_positions)
+        pos_notionals = self._position_notionals(state)
+        open_coins = set(pos_notionals.keys())
+        equity = float(state.get("marginSummary", {}).get("accountValue", 0) or 0)
+        gross = sum(pos_notionals.values())
         # Confirmar posiciones de tendencia ya visibles; limpiar SOLO las que estaban
         # confirmadas y han desaparecido (stop ejecutado) -> evita doble entrada por
         # latencia de fill (la posición recién abierta aún no aparece en user_state).
@@ -164,6 +192,14 @@ class SessionEngine:
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
+            # #4: al entrar en régimen de tendencia, cancelar una vez el grid en reposo
+            # (deja de mezclar inventario grid con la entrada de tendencia).
+            trending = self.trends[coin].is_trending(ms)
+            if trending and coin not in self.trend_regime:
+                self.client.cancel_all(coin)
+                self.trend_regime.add(coin)
+            elif not trending:
+                self.trend_regime.discard(coin)
             resting = self._resting_prices(coin)
             if resting is None:
                 continue  # no pudimos leer ordenes en reposo: no operar este par este tick
@@ -175,18 +211,17 @@ class SessionEngine:
                     continue
                 if d.action == ActionType.PLACE_LIMIT and self._has_resting_near(d, resting, ms):
                     continue
-                self._apply(coin, ms, d, n_open)
+                self._apply(coin, ms, d, n_open, equity, gross,
+                            pos_notionals.get(coin, 0.0))
         if self.state == SessionState.CLOSING and n_open == 0:
             self._reset()
 
-    def _apply(self, coin: str, ms: MarketState, d, n_open: int) -> None:
+    def _apply(self, coin: str, ms: MarketState, d, n_open: int,
+               equity: float, gross: float, coin_notional: float) -> None:
         if d.action == ActionType.PLACE_LIMIT:
             if not d.reduce_only:
                 notional = (d.price or 0) * (d.size or 0)
-                ok, reason = self.risk.can_open(notional, n_open,
-                                                self.cfg.limits.max_leverage)
-                if not ok:
-                    self.store.record_risk_event(self.session_id, "rechazo", reason)
+                if not self._risk_ok(notional, n_open, equity, gross, coin_notional):
                     return
             if d.side is None:
                 raise ValueError("PLACE_LIMIT requiere side")
@@ -203,16 +238,12 @@ class SessionEngine:
                 return
             if not d.reduce_only:
                 notional = ms.mid * (d.size or 0)
-                ok, reason = self.risk.can_open(notional, n_open,
-                                                self.cfg.limits.max_leverage)
-                if not ok:
-                    self.store.record_risk_event(self.session_id, "rechazo", reason)
+                if not self._risk_ok(notional, n_open, equity, gross, coin_notional):
                     return
             if d.side is None:
                 raise ValueError("PLACE_MARKET requiere side")
             try:
-                self.client.place_limit(coin, d.side == Side.BUY, ms.mid, d.size,
-                                        post_only=False, reduce_only=d.reduce_only)
+                self.client.market_open(coin, d.side == Side.BUY, d.size or 0.0)
             except ValueError as e:
                 self.store.record_risk_event(self.session_id, "orden_rechazada", str(e))
                 return
@@ -244,6 +275,7 @@ class SessionEngine:
                 coins[coin] = {
                     "mid": ms.mid,
                     "mode": "trend" if trending else "grid",
+                    "funding": ms.funding_rate,
                     "triggers": [to_dict(t) for t in active.armed_triggers(ms)],
                     "conditions": [to_dict(c) for c in conds],
                     "armed": all(c.met for c in conds) if conds else False,

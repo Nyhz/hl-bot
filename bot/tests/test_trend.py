@@ -2,7 +2,7 @@ from hlbot.models import MarketState, Candle, RiskLimits, SessionConfig, Side, A
 from hlbot.strategy.trend import TrendOverlayStrategy
 
 def _cfg():
-    limits = RiskLimits(15.0, 3, 2.0, 5.0, 20.0)
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
     return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits)
 
 def _uptrend_candles(n=60):
@@ -35,6 +35,9 @@ def test_evaluate_opens_long_with_stop_in_uptrend():
     assert ActionType.SET_STOP in actions
     long_d = next(d for d in decisions if d.action == ActionType.PLACE_MARKET)
     assert long_d.side == Side.BUY
+    # tamaño = posición configurada (max_position_notional = $10)
+    assert abs(long_d.price * long_d.size - 10.0) < 1e-6 if long_d.price else \
+        abs(ms.mid * long_d.size - 10.0) < 1e-6
 
 def test_conditions_expose_adx():
     s = TrendOverlayStrategy(_cfg())

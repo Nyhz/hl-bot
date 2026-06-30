@@ -11,6 +11,7 @@ from hlbot.account import merge_tape, format_candles
 from hlbot.track_record import session_summary, global_stats
 
 LIQUID_MAJORS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+MAX_OPEN_CAP = 4  # tope duro de posiciones simultaneas, no editable
 
 
 class LimitsBody(BaseModel):
@@ -19,6 +20,7 @@ class LimitsBody(BaseModel):
     max_leverage: float
     daily_loss_limit: float
     total_loss_limit: float
+    max_coin_notional: float = 30.0
 
 
 class LaunchBody(BaseModel):
@@ -71,7 +73,9 @@ def create_app(engine: SessionEngine, control_token: str,
     @app.post("/session/launch")
     def launch(body: LaunchBody, x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
-        limits = RiskLimits(**body.limits.model_dump())
+        limits_data = body.limits.model_dump()
+        limits_data["max_open_positions"] = min(MAX_OPEN_CAP, limits_data["max_open_positions"])
+        limits = RiskLimits(**limits_data)
         cfg = SessionConfig(watchlist=body.watchlist, capital=body.capital,
                             limits=limits, grid_n=body.grid_n,
                             grid_range_pct=body.grid_range_pct,

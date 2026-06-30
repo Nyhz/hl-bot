@@ -35,17 +35,36 @@ def test_launch_requires_token():
 def test_launch_with_token_moves_to_scanning():
     client, engine = _client()
     body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
+            "limits": {"max_position_notional": 10.0, "max_open_positions": 4,
                        "max_leverage": 2.0, "daily_loss_limit": 5.0,
                        "total_loss_limit": 20.0}}
     r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
     assert r.status_code == 200
     assert engine.state.value == "scanning"
 
+def test_launch_clamps_max_open_to_4():
+    client, engine = _client()
+    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
+            "limits": {"max_position_notional": 10.0, "max_open_positions": 10,
+                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
+                       "total_loss_limit": 20.0}}
+    r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    assert r.status_code == 200
+    assert engine.risk.limits.max_open_positions == 4   # tope duro
+
+def test_launch_rejects_position_below_min_422():
+    client, _ = _client()
+    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
+            "limits": {"max_position_notional": 5.0, "max_open_positions": 4,
+                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
+                       "total_loss_limit": 20.0}}
+    r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    assert r.status_code == 422
+
 def test_kill_requires_confirm_flag():
     client, engine = _client()
     body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
+            "limits": {"max_position_notional": 10.0, "max_open_positions": 4,
                        "max_leverage": 2.0, "daily_loss_limit": 5.0,
                        "total_loss_limit": 20.0}}
     client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})

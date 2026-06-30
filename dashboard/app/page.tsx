@@ -4,6 +4,7 @@ import { useLiveSnapshot } from "@/lib/useLiveSnapshot";
 import { api } from "@/lib/api";
 import { HeaderBar } from "@/components/HeaderBar";
 import { StatTiles } from "@/components/StatTiles";
+import { AttributionPanel } from "@/components/AttributionPanel";
 import { EquityHero } from "@/components/EquityHero";
 import { EquityCurve } from "@/components/EquityCurve";
 import { OpenPositions } from "@/components/OpenPositions";
@@ -40,6 +41,7 @@ export default function Home() {
             <EquityHero account={snapshot.account} />
             <EquityCurve sessionId={snapshot.session_id} equity={snapshot.account.equity} />
             <StatTiles account={snapshot.account} />
+            <AttributionPanel account={snapshot.account} />
             <OpenPositions positions={snapshot.positions} coins={snapshot.coins} onFocus={setFocusCoin} />
             <Tape events={snapshot.tape_recent} />
           </div>

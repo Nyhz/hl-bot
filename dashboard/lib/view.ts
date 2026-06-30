@@ -30,6 +30,18 @@ export function pnlColor(n: number): string {
   return n < 0 ? "var(--neon-red)" : "var(--neon-green)";
 }
 
+// Funding horario como porcentaje. Positivo = los largos pagan (coste si estás largo).
+export function fmtFunding(f: number | null | undefined): string {
+  if (f === null || f === undefined || Number.isNaN(f)) return "—";
+  return `${(f * 100).toFixed(4)}%/h`;
+}
+
+// Color desde la óptica de un largo: funding positivo = pagas (rojo), negativo = cobras (verde).
+export function fundingColor(f: number | null | undefined): string {
+  if (f === null || f === undefined || Number.isNaN(f) || f === 0) return "var(--muted)";
+  return f > 0 ? "var(--neon-red)" : "var(--neon-green)";
+}
+
 export function fmtDuration(sec: number | null): string {
   if (sec === null || sec === undefined || Number.isNaN(sec) || sec < 0) return "—";
   const h = Math.floor(sec / 3600);

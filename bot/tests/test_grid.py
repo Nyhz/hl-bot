@@ -2,7 +2,7 @@ from hlbot.models import MarketState, RiskLimits, SessionConfig, Side, ActionTyp
 from hlbot.strategy.grid import GridStrategy
 
 def _cfg():
-    limits = RiskLimits(15.0, 3, 2.0, 5.0, 20.0)
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
     return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
                          grid_n=4, grid_range_pct=0.02)
 
@@ -38,7 +38,8 @@ def test_evaluate_places_maker_orders_in_range():
     ms = MarketState(coin="ETH", mid=3000.0)
     decisions = g.evaluate(ms)
     assert all(d.action == ActionType.PLACE_LIMIT for d in decisions)
-    assert all(d.price * d.size >= 10.0 for d in decisions)  # min notional
+    # cada rung tiene el notional de la posición configurada (max_position_notional = $10)
+    assert all(abs(d.price * d.size - 10.0) < 1e-6 for d in decisions)
 
 def test_evaluate_range_exit_when_price_above_upper():
     g = GridStrategy(_cfg())

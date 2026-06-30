@@ -18,9 +18,9 @@ class GridStrategy:
         self.levels = [self.lower + step * i for i in range(self.cfg.grid_n + 1)]
 
     def _rung_size(self, price: float) -> float:
-        # Notional por rung con margen para sobrevivir al redondeo de tamaño a la baja.
-        notional = max(10.0, self.cfg.capital / (2 * self.cfg.grid_n)) * 1.05
-        return notional / price
+        # Cada rung es una posición del tamaño configurado (max_position_notional,
+        # default $10 = mínimo de HL). El mínimo lo garantiza place_limit redondeando arriba.
+        return self.cfg.limits.max_position_notional / price
 
     def armed_triggers(self, ms: MarketState) -> list[Trigger]:
         out: list[Trigger] = []

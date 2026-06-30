@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from decimal import Decimal
 
 from hlbot.config import Config
@@ -56,6 +57,16 @@ class HLClient:
     def candles(self, coin: str, interval: str, start: int, end: int) -> list[dict]:
         return self.info.candles_snapshot(coin, interval, start, end)
 
+    def funding_rates(self) -> dict[str, float]:
+        # Funding horario actual por activo (metaAndAssetCtxs trae 'funding' por moneda).
+        meta, ctxs = self.info.meta_and_asset_ctxs()
+        out: dict[str, float] = {}
+        for a, c in zip(meta.get("universe", []), ctxs):
+            f = c.get("funding")
+            if f is not None:
+                out[a["name"]] = float(f)
+        return out
+
     def user_state(self) -> dict:
         return self.info.user_state(self.address)
 
@@ -64,6 +75,11 @@ class HLClient:
         szd = self.sz_decimals[coin]
         px = round_price(price, szd)
         sz = round_size(size, szd)
+        # La posicion objetivo es ~$10 (el minimo de HL), sin colchon: si el redondeo de
+        # tamano deja la orden por debajo del minimo, subimos el tamano al siguiente tick.
+        if not reduce_only and not meets_min_notional(px, sz):
+            scale = 10 ** szd
+            sz = math.ceil((10.0 / px) * scale) / scale
         if not reduce_only and not meets_min_notional(px, sz):
             raise ValueError(f"orden por debajo del minimo de $10: {px}*{sz}")
         if self.exchange is None:
@@ -71,6 +87,27 @@ class HLClient:
         tif = "Alo" if post_only else "Gtc"
         return self.exchange.order(coin, is_buy, sz, px, {"limit": {"tif": tif}},
                                    reduce_only=reduce_only)
+
+    def set_leverage(self, coin: str, leverage: int, is_cross: bool = False) -> dict:
+        # Fija el apalancamiento máximo por activo (isolated por defecto) para acotar
+        # el riesgo de liquidación de cada posición.
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        return self.exchange.update_leverage(leverage, coin, is_cross)
+
+    def market_open(self, coin: str, is_buy: bool, size: float,
+                    slippage: float = 0.01) -> dict:
+        # Entrada de mercado REAL (IOC a precio cruzado con slippage), no un límite al mid
+        # que se puede quedar en reposo.
+        szd = self.sz_decimals[coin]
+        sz = round_size(size, szd)
+        mid = self.mid(coin)
+        if not meets_min_notional(mid, sz):
+            scale = 10 ** szd
+            sz = math.ceil((10.0 / mid) * scale) / scale
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        return self.exchange.market_open(coin, is_buy, sz, None, slippage)
 
     def market_close(self, coin: str) -> dict:
         if self.exchange is None:

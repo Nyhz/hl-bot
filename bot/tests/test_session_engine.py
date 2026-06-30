@@ -14,7 +14,13 @@ class FakeClient:
         self._mid = {"ETH": 3000.0}
         self.account_value = "40"
         self.positions = []
+        self.leverage_set = []
+        self.market_opens = []
     def mid(self, coin): return self._mid[coin]
+    def set_leverage(self, coin, leverage, is_cross=False):
+        self.leverage_set.append((coin, leverage, is_cross)); return {"status": "ok"}
+    def market_open(self, coin, is_buy, size, slippage=0.01):
+        self.market_opens.append((coin, is_buy, size)); return {"status": "ok"}
     def user_state(self):
         return {"assetPositions": self.positions,
                 "marginSummary": {"accountValue": self.account_value}}
@@ -35,7 +41,7 @@ class FakeStore:
     def record_pnl_snapshot(self, sid, pnl): pass
 
 def _cfg():
-    limits = RiskLimits(15.0, 3, 2.0, 5.0, 20.0)
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
     return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
                          grid_n=4, grid_range_pct=0.02)
 
@@ -110,7 +116,7 @@ def test_closing_reduce_only_bypasses_risk_and_keeps_closing():
                     "marginSummary": {"accountValue": "40"}}
 
     # límite de 1 posición: una apertura normal sería rechazada; reduce_only debe pasar igual
-    limits = RiskLimits(15.0, 1, 2.0, 5.0, 20.0)
+    limits = RiskLimits(10.0, 1, 2.0, 5.0, 20.0)
     cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
                         grid_n=4, grid_range_pct=0.02)
 
@@ -160,9 +166,17 @@ def test_daily_anchor_resets_on_new_local_day():
 
 def test_launch_rejects_unaffordable_grid():
     eng = SessionEngine(FakeClient(), FakeStore())
-    limits = RiskLimits(15.0, 3, 2.0, 5.0, 20.0)
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
     cfg = SessionConfig(watchlist=["ETH"], capital=20.0, limits=limits,
-                        grid_n=4, grid_range_pct=0.02)   # 4*10=40 > 20
+                        grid_n=4, grid_range_pct=0.02)   # 4*$10=40 > 20
+    with pytest.raises(ValueError):
+        eng.launch(cfg)
+
+def test_launch_rejects_position_below_min():
+    eng = SessionEngine(FakeClient(), FakeStore())
+    limits = RiskLimits(5.0, 4, 2.0, 5.0, 20.0)          # posición $5 < mínimo $10
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
     with pytest.raises(ValueError):
         eng.launch(cfg)
 
@@ -199,9 +213,9 @@ def test_trend_stop_placed_once_and_no_reentry():
         def is_trending(self, ms): return True
         def evaluate(self, ms):
             return [
-                Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY, size=0.004, reason="t"),
+                Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY, size=0.003, reason="t"),
                 Decision("ETH", ActionType.SET_STOP, side=Side.SELL, price=2940.0,
-                         size=0.004, reduce_only=True, reason="stop"),
+                         size=0.003, reduce_only=True, reason="stop"),
             ]
         def armed_triggers(self, ms): return []
         def conditions(self, ms): return []
@@ -209,12 +223,10 @@ def test_trend_stop_placed_once_and_no_reentry():
 
     eng.tick(_flat_ms())
     assert len(client.stops) == 1                 # stop colocado
-    market_opens = [o for o in client.orders if o[5] is False]  # post_only False = market
-    assert len(market_opens) == 1                 # abrió una vez
+    assert len(client.market_opens) == 1          # abrió una vez (market real)
     eng.tick(_flat_ms())
     assert len(client.stops) == 1                 # no recoloca stop
-    market_opens = [o for o in client.orders if o[5] is False]
-    assert len(market_opens) == 1                 # no reabre tendencia
+    assert len(client.market_opens) == 1          # no reabre tendencia
 
 
 def test_trend_no_double_entry_before_fill_visible():
@@ -227,15 +239,14 @@ def test_trend_no_double_entry_before_fill_visible():
         def is_trending(self, ms): return True
         def evaluate(self, ms):
             return [Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY,
-                             size=0.004, reason="t")]
+                             size=0.003, reason="t")]
         def armed_triggers(self, ms): return []
         def conditions(self, ms): return []
     eng.trends["ETH"] = _Trend()
 
     eng.tick(_flat_ms())                 # abre (posición aún no visible en user_state)
     eng.tick(_flat_ms())                 # latencia de fill: sigue sin verse
-    opens = [o for o in client.orders if o[5] is False]
-    assert len(opens) == 1               # NO reabre pese a no estar confirmada
+    assert len(client.market_opens) == 1 # NO reabre pese a no estar confirmada
 
 def test_snapshot_has_armed_and_mode():
     eng = SessionEngine(FakeClient(), FakeStore())
@@ -245,6 +256,60 @@ def test_snapshot_has_armed_and_mode():
     assert "armed" in snap["coins"]["ETH"]
     assert "session_id" in snap and snap["session_started_at"] is not None
 
+def test_snapshot_exposes_funding_rate():
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    ms["ETH"].funding_rate = 0.0000125
+    snap = eng.snapshot(ms)
+    assert snap["coins"]["ETH"]["funding"] == 0.0000125
+
+
+def test_launch_sets_isolated_leverage_per_coin():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    assert ("ETH", 2, False) in client.leverage_set   # max_leverage=2, isolated
+
+def test_leverage_guard_blocks_when_real_leverage_exceeds():
+    client = FakeClient()
+    # posición BTC de $75 de notional + equity 40 -> añadir $10 da lev 2.125 > 2
+    client.positions = [{"position": {"coin": "BTC", "positionValue": "75"}}]
+    client.account_value = "40"
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())
+    assert client.orders == []                         # todos los rungs rechazados por leverage
+
+def test_per_coin_cap_blocks_growth():
+    client = FakeClient()
+    # posición ETH de $25; equity alto (leverage no bloquea); cap por moneda $30
+    client.positions = [{"position": {"coin": "ETH", "positionValue": "25"}}]
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0, 30.0)
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(cfg)
+    eng.tick(_flat_ms())
+    assert client.orders == []                         # 25 + 10 > 30 -> bloqueado por moneda
+
+def test_grid_canceled_once_on_trend_regime_switch():
+    from hlbot.models import MarketState
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())
+    eng.tick(_flat_ms())
+    assert client.canceled == ["ETH"]                  # cancelado una sola vez al entrar en tendencia
 
 def test_trend_reentry_after_external_close():
     from hlbot.models import Decision, ActionType, Side
@@ -256,7 +321,7 @@ def test_trend_reentry_after_external_close():
         def is_trending(self, ms): return True
         def evaluate(self, ms):
             return [Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY,
-                             size=0.004, reason="t")]
+                             size=0.003, reason="t")]
         def armed_triggers(self, ms): return []
         def conditions(self, ms): return []
     eng.trends["ETH"] = _Trend()
@@ -266,5 +331,4 @@ def test_trend_reentry_after_external_close():
     eng.tick(_flat_ms())                                  # no reabre
     client.positions = []                                 # stop ejecutado -> cerrada
     eng.tick(_flat_ms())                                  # permite reentrada
-    opens = [o for o in client.orders if o[5] is False]
-    assert len(opens) == 2
+    assert len(client.market_opens) == 2

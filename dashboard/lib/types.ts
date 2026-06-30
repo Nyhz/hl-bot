@@ -4,7 +4,7 @@ export type SessionState = "idle" | "scanning" | "active" | "closing";
 export interface Condition { name: string; value: number; threshold: number; met: boolean; }
 export interface Trigger { coin: string; level: number; side: string; action: string; description: string; }
 export interface CoinView {
-  mid: number; mode: "grid" | "trend";
+  mid: number; mode: "grid" | "trend"; funding: number | null;
   triggers: Trigger[]; conditions: Condition[]; armed: boolean;
 }
 export interface Position {

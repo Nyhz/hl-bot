@@ -100,9 +100,16 @@ async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
             loop_count += 1
             coins = engine.cfg.watchlist if engine.cfg else []
             now_ms = int(time.time() * 1000)
+            funding: dict[str, float] = {}
+            if coins:
+                try:
+                    funding = client.funding_rates()
+                except Exception as e:
+                    print(f"[trade_loop] funding error: {e}", flush=True)
             states: dict[str, MarketState] = {}
             for coin in coins:
                 ms, raw = build_market_state(client, coin, now_ms)
+                ms.funding_rate = funding.get(coin)
                 states[coin] = ms
                 shared[coin] = ms
                 persist_candles(store, coin, raw)

@@ -26,7 +26,8 @@ class TrendOverlayStrategy:
         return adx_ > self.cfg.adx_threshold
 
     def _size(self, price: float) -> float:
-        return max(10.0, self.cfg.capital / 2) / price
+        # Tamaño de posición configurado (max_position_notional, default $10).
+        return self.cfg.limits.max_position_notional / price
 
     def conditions(self, ms: MarketState) -> list[Condition]:
         if len(ms.candles) < self.cfg.ema_slow:
