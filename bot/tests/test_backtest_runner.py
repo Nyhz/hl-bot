@@ -21,8 +21,8 @@ def test_run_backtest_returns_structure_and_runs_engine():
     assert set(res) == {"metrics", "equity_curve", "trades", "decisions"}
     assert len(res["equity_curve"]) > 0
     assert "net_pnl" in res["metrics"]
-    # en un rango oscilante el grid debe haber colocado/llenado algo
-    assert res["metrics"]["n_trades"] >= 0
+    # el grid llenó al menos una orden en el rango oscilante
+    assert len(res["trades"]) >= 1
 
 def test_compute_metrics_drawdown_and_net():
     curve = [{"ts": 1, "total_pnl": 1000.0}, {"ts": 2, "total_pnl": 1010.0},

@@ -31,6 +31,9 @@ class CaptureStore:
 
 
 def run_backtest(coin, candles, funding_rows, cfg, sz_decimals) -> dict:
+    if not candles:
+        return {"metrics": compute_metrics([], [], 0.0),
+                "equity_curve": [], "trades": [], "decisions": []}
     broker = BacktestBroker(capital=cfg.capital, sz_decimals=sz_decimals)
     store = CaptureStore()
     if candles:
