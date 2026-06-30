@@ -28,3 +28,6 @@ dist/
 
 # SDD scratch (ledger/briefs/reports)
 .superpowers/
+
+# Lock de runtime de tareas programadas (no versionar)
+.claude/scheduled_tasks.lock
