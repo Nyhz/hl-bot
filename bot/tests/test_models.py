@@ -34,3 +34,15 @@ def test_to_dict_converts_enums_in_nested_lists():
     d = to_dict(w)
     assert d["triggers"][0]["side"] == "buy"  # enum -> str inside a nested list
     assert isinstance(d["triggers"][0]["side"], str)
+
+def test_sessionconfig_has_as_defaults():
+    from hlbot.models import SessionConfig, RiskLimits
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0,
+                        limits=RiskLimits(10.0, 4, 2.0, 5.0, 20.0))
+    assert cfg.skew_strength == 1.5
+    assert cfg.spread_vol_mult == 0.5
+    assert cfg.min_spread_frac == 0.001
+    assert cfg.funding_tilt == 0.3
+    assert cfg.funding_min == 0.00005
+    assert cfg.ema_sep_frac == 0.001
+    assert not hasattr(cfg, "grid_spacing_pct")
