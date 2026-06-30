@@ -332,3 +332,12 @@ def test_trend_reentry_after_external_close():
     client.positions = []                                 # stop ejecutado -> cerrada
     eng.tick(_flat_ms())                                  # permite reentrada
     assert len(client.market_opens) == 2
+
+def test_tick_populates_inventory_from_user_state():
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.0064", "positionValue": "10.1"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    eng.tick(ms)
+    assert abs(ms["ETH"].inventory - 0.0064) < 1e-9

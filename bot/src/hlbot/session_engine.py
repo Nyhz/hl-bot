@@ -181,6 +181,12 @@ class SessionEngine:
         open_coins = set(pos_notionals.keys())
         equity = float(state.get("marginSummary", {}).get("accountValue", 0) or 0)
         gross = sum(pos_notionals.values())
+        pos_sizes = {}
+        for p in asset_positions:
+            pos = p.get("position", {}) or {}
+            coin = pos.get("coin")
+            if coin:
+                pos_sizes[coin] = float(pos.get("szi", 0) or 0)
         # Confirmar posiciones de tendencia ya visibles; limpiar SOLO las que estaban
         # confirmadas y han desaparecido (stop ejecutado) -> evita doble entrada por
         # latencia de fill (la posición recién abierta aún no aparece en user_state).
@@ -192,6 +198,7 @@ class SessionEngine:
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
+            ms.inventory = pos_sizes.get(coin, 0.0)
             # #4: al entrar en régimen de tendencia, cancelar una vez el grid en reposo
             # (deja de mezclar inventario grid con la entrada de tendencia).
             trending = self.trends[coin].is_trending(ms)

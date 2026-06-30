@@ -39,6 +39,7 @@ class MarketState:
     mid: float
     candles: list[Candle] = field(default_factory=list)
     funding_rate: float | None = None
+    inventory: float = 0.0
 
 
 @dataclass
