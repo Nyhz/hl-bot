@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { buildLaunchBody, postControl, type LaunchForm } from "@/lib/control";
 import { toast } from "sonner";
+import { Hint } from "./Hint";
 
 const MAX_OPEN = 4;  // tope duro de posiciones simultáneas (fijado en el servidor)
 const DEFAULTS: LaunchForm = {
@@ -34,6 +35,9 @@ export function LaunchPanel({ coins, state, onLaunched }: { coins: { name: strin
       {!idle && <div className="muted" style={{ fontSize: 12 }}>sesión activa — cierra para lanzar otra</div>}
       {idle && (
         <>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+            Pares a vigilar <Hint text="Monedas que la sesión vigila y opera. Elige al menos una." />
+          </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
             {coins.map((c) => (
               <button key={c.name} onClick={() => toggle(c.name)}
@@ -45,16 +49,18 @@ export function LaunchPanel({ coins, state, onLaunched }: { coins: { name: strin
             ))}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 12 }}>
-            <label>posición $ (≥10) <input type="number" min={10} step={1} defaultValue={f.maxPositionNotional} onChange={num("maxPositionNotional")} style={inputS} /></label>
-            <label>capital <input type="number" defaultValue={f.capital} onChange={num("capital")} style={inputS} /></label>
-            <label>grid_n <input type="number" defaultValue={f.gridN} onChange={num("gridN")} style={inputS} /></label>
-            <label>max lev <input type="number" defaultValue={f.maxLeverage} onChange={num("maxLeverage")} style={inputS} /></label>
-            <label>cap moneda $ <input type="number" defaultValue={f.maxCoinNotional} onChange={num("maxCoinNotional")} style={inputS} /></label>
-            <label>adx umbral <input type="number" defaultValue={f.adxThreshold} onChange={num("adxThreshold")} style={inputS} /></label>
-            <label>pérdida diaria <input type="number" defaultValue={f.dailyLossLimit} onChange={num("dailyLossLimit")} style={inputS} /></label>
-            <label>pérdida total <input type="number" defaultValue={f.totalLossLimit} onChange={num("totalLossLimit")} style={inputS} /></label>
+            <label>Tamaño de posición ($) <Hint text="USDC por orden/posición. Mínimo $10 (el de Hyperliquid). Lo usan cada rung del grid y cada entrada de tendencia." /><input type="number" min={10} step={1} defaultValue={f.maxPositionNotional} onChange={num("maxPositionNotional")} style={inputS} /></label>
+            <label>Capital ($) <Hint text="USDC asignado a la sesión. Debe cubrir grid_n × tamaño de posición." /><input type="number" defaultValue={f.capital} onChange={num("capital")} style={inputS} /></label>
+            <label>Rungs del grid (grid_n) <Hint text="Nº de escalones (órdenes) por lado del grid. Más rungs = más órdenes y más fees." /><input type="number" defaultValue={f.gridN} onChange={num("gridN")} style={inputS} /></label>
+            <label>Apalancamiento máx (×) <Hint text="Leverage máximo; el bot lo fija isolated por moneda y rechaza órdenes que lo superen." /><input type="number" defaultValue={f.maxLeverage} onChange={num("maxLeverage")} style={inputS} /></label>
+            <label>Tope por moneda ($) <Hint text="Notional máximo de posición abierta por moneda. Evita que una sola acapare o que se apile grid+tendencia." /><input type="number" defaultValue={f.maxCoinNotional} onChange={num("maxCoinNotional")} style={inputS} /></label>
+            <label>Umbral ADX <Hint text="Fuerza de tendencia (ADX) a partir de la cual el bot pasa de grid a modo tendencia. Típico 25." /><input type="number" defaultValue={f.adxThreshold} onChange={num("adxThreshold")} style={inputS} /></label>
+            <label>Stop pérdida diaria ($) <Hint text="Si la pérdida del día llega a este valor, el bot pausa y cierra la sesión automáticamente." /><input type="number" defaultValue={f.dailyLossLimit} onChange={num("dailyLossLimit")} style={inputS} /></label>
+            <label>Stop pérdida total ($) <Hint text="Si la pérdida total de la sesión llega a este valor, el bot pausa y cierra automáticamente." /><input type="number" defaultValue={f.totalLossLimit} onChange={num("totalLossLimit")} style={inputS} /></label>
           </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>máx {MAX_OPEN} posiciones simultáneas (fijo)</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+            máx {MAX_OPEN} posiciones simultáneas <Hint text="Tope duro fijado en el servidor; no editable." />
+          </div>
           <button onClick={launch} disabled={busy}
             style={{ marginTop: 10, width: "100%", padding: 10, border: "none", borderRadius: 6,
               background: "var(--neon-green)", color: "#000", fontWeight: 700, cursor: "pointer" }}>
