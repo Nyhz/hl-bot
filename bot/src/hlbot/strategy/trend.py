@@ -37,7 +37,7 @@ class TrendOverlayStrategy:
     def conditions(self, ms: MarketState) -> list[Condition]:
         if len(ms.candles) < self.cfg.ema_slow:
             return []
-        ef, es, adx_, adx_prev, _ = self._signals(ms)
+        ef, es, adx_, _, _ = self._signals(ms)
         return [
             Condition("adx", adx_, self.cfg.adx_threshold, adx_ > self.cfg.adx_threshold),
             Condition("ema_align", ef - es, 0.0, ef > es),

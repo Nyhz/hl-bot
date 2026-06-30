@@ -6,7 +6,7 @@ def _cfg():
     return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits)
 
 def _uptrend_candles(n=60):
-    # Uptrend with pullbacks so ADX oscillates realistically (can be rising at end)
+    # Accelerating uptrend with periodic pullbacks so ADX rises toward the end (proving all three clauses pass).
     out = []
     price = 10.0
     for i in range(1, n + 1):
@@ -39,9 +39,13 @@ def test_is_trending_false_when_flat():
     ms = MarketState(coin="ETH", mid=100.0, candles=_flat_candles())
     assert s.is_trending(ms) is False
 
-def test_entry_rejected_when_emas_too_close():
-    s = TrendOverlayStrategy(_cfg())
-    ms = MarketState(coin="ETH", mid=100.0, candles=_weak_cross_candles())
+def test_entry_rejected_when_ema_separation_too_small():
+    # Mismo régimen alcista (ADX alto y creciente) pero con umbral de separación imposible
+    # -> is_trending debe ser False POR la cláusula de separación de EMAs, no por ADX.
+    cfg = _cfg()
+    cfg.ema_sep_frac = 1.0          # 100% de separación: imposible -> aísla la cláusula
+    s = TrendOverlayStrategy(cfg)
+    ms = MarketState(coin="ETH", mid=60.0, candles=_uptrend_candles())
     assert s.is_trending(ms) is False
 
 def test_evaluate_opens_long_with_stop_in_uptrend():
@@ -62,14 +66,6 @@ def test_conditions_expose_adx():
     ms = MarketState(coin="ETH", mid=60.0, candles=_uptrend_candles())
     names = [c.name for c in s.conditions(ms)]
     assert "adx" in names
-
-def _weak_cross_candles(n=60):
-    # EMAs casi pegadas: precio plano con micro-pendiente -> separación < umbral
-    out = []
-    for i in range(1, n + 1):
-        c = 100.0 + i * 0.001
-        out.append(Candle(t=i, open=c, high=c + 0.05, low=c - 0.05, close=c, volume=1.0))
-    return out
 
 def _downtrend_candles(n=60):
     out = []
