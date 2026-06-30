@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi } from "lightweight-charts";
-import type { CoinView } from "@/lib/types";
+import type { CoinView, Trigger } from "@/lib/types";
 import { api } from "@/lib/api";
 import { candleSeries } from "@/lib/view";
 
@@ -9,6 +9,7 @@ export function FocusChart({ coin, coinView }: { coin: string | null; coinView: 
   const ref = useRef<HTMLDivElement | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const triggersRef = useRef<Trigger[]>([]);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -30,18 +31,32 @@ export function FocusChart({ coin, coinView }: { coin: string | null; coinView: 
     const series = seriesRef.current;
     if (!series || !coin) return;
     let cancelled = false;
-    api.getCandles(coin).then((cs) => { if (!cancelled) series.setData(candleSeries(cs) as never); }).catch(() => {});
+    api.getCandles(coin).then((cs) => { if (!cancelled) series.setData(candleSeries(cs) as never); }).catch((e) => console.error("getCandles", e));
     return () => { cancelled = true; };
   }, [coin]);
 
-  // Price lines de triggers (se recrean cuando cambian)
+  const triggers = coinView?.triggers ?? [];
+  const triggerKey = triggers.map((t) => `${t.level}:${t.side}:${t.action}`).join("|");
+
+  // Keep triggersRef current before effects read it (layout effects run before effects)
+  useLayoutEffect(() => { triggersRef.current = triggers; });
+
+  // Price lines de triggers — se recrean SOLO cuando cambia el contenido (no en cada tick del snapshot)
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
-    const lines = (coinView?.triggers ?? []).map((t) =>
-      series.createPriceLine({ price: t.level, color: t.side === "buy" ? "#00ff88" : "#ff4466", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: t.action }));
+    const lines = triggersRef.current.map((t) =>
+      series.createPriceLine({
+        price: t.level,
+        color: t.side === "buy" ? "#00ff88" : "#ff4466",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: t.action,
+      }),
+    );
     return () => { lines.forEach((l) => series.removePriceLine(l)); };
-  }, [coinView]);
+  }, [triggerKey]);
 
   return (
     <div className="panel" style={{ padding: 8 }}>
