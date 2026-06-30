@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmtAge, pnlColor, equitySeries, positionView } from "../view";
+import { fmtAge, pnlColor, equitySeries, positionView, conditionPct } from "../view";
 import type { Position } from "../types";
 
 describe("view helpers", () => {
@@ -19,6 +19,14 @@ describe("equitySeries", () => {
   it("maps ts/total_pnl to time/value ascending", () => {
     const out = equitySeries([{ ts: 200, total_pnl: 50.4 }, { ts: 100, total_pnl: 50.0 }]);
     expect(out).toEqual([{ time: 100, value: 50.0 }, { time: 200, value: 50.4 }]);
+  });
+});
+
+describe("conditionPct", () => {
+  it("ratio value/threshold clamped 0..1", () => {
+    expect(conditionPct({ name: "adx", value: 12.5, threshold: 25, met: false })).toBeCloseTo(0.5);
+    expect(conditionPct({ name: "adx", value: 30, threshold: 25, met: true })).toBe(1);
+    expect(conditionPct({ name: "x", value: 5, threshold: 0, met: true })).toBe(1);
   });
 });
 

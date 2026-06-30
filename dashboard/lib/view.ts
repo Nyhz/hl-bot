@@ -1,4 +1,11 @@
-import type { Position } from "./types";
+import type { Condition, Position } from "./types";
+
+export function conditionPct(c: Condition): number {
+  if (c.met) return 1;
+  if (!c.threshold) return c.met ? 1 : 0;
+  const r = Math.abs(c.value) / Math.abs(c.threshold);
+  return Math.max(0, Math.min(1, r));
+}
 
 export function positionView(pos: Position, mid: number | null) {
   const markPx = mid ?? pos.mark_px ?? pos.entry_px;
