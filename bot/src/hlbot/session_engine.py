@@ -6,6 +6,7 @@ from hlbot.models import (
 from hlbot.strategy.grid import GridStrategy
 from hlbot.strategy.trend import TrendOverlayStrategy
 from hlbot.risk import RiskManager
+from hlbot.indicators import atr
 
 
 class SessionEngine:
@@ -24,7 +25,8 @@ class SessionEngine:
         self.day_anchor_value: float = 0.0
         self.day_anchor_date = None
         self.trend_open: set[str] = set()
-        self.stops_placed: set[str] = set()
+        self.stop_levels: dict[str, float] = {}
+        self.stop_oids: dict[str, int] = {}
         self.trend_confirmed: set[str] = set()
         self.trend_regime: set[str] = set()
 
@@ -62,7 +64,8 @@ class SessionEngine:
         self.day_anchor_value = self.session_start_value
         self.day_anchor_date = self._today_local()
         self.trend_open = set()
-        self.stops_placed = set()
+        self.stop_levels = {}
+        self.stop_oids = {}
         self.trend_confirmed = set()
         self.trend_regime = set()
         self.paused = False
@@ -99,29 +102,17 @@ class SessionEngine:
         self.day_anchor_value = 0.0
         self.day_anchor_date = None
         self.trend_open = set()
-        self.stops_placed = set()
+        self.stop_levels = {}
+        self.stop_oids = {}
         self.trend_confirmed = set()
         self.trend_regime = set()
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
         grid = self.grids[ms.coin]
-        if trend.is_trending(ms):
-            return trend.evaluate(ms)  # tendencia: pausa el grid de este par
+        if ms.coin in self.trend_open or trend.is_trending(ms):
+            return trend.evaluate(ms)
         return grid.evaluate(ms)
-
-    def _resting_prices(self, coin: str) -> list[float] | None:
-        try:
-            return [float(o["limitPx"]) for o in self.client.open_orders(coin)]
-        except Exception:
-            return None
-
-    def _has_resting_near(self, d, resting: list[float], ms: MarketState) -> bool:
-        if d.price is None or not resting:
-            return False
-        step = (2 * self.cfg.grid_range_pct * ms.mid) / self.cfg.grid_n
-        tol = step / 2
-        return any(abs(r - d.price) <= tol for r in resting)
 
     def _account_value(self) -> float:
         state = self.client.user_state()
@@ -181,40 +172,81 @@ class SessionEngine:
         open_coins = set(pos_notionals.keys())
         equity = float(state.get("marginSummary", {}).get("accountValue", 0) or 0)
         gross = sum(pos_notionals.values())
+        pos_sizes = {}
+        for p in asset_positions:
+            pos = p.get("position", {}) or {}
+            coin = pos.get("coin")
+            if coin:
+                pos_sizes[coin] = float(pos.get("szi", 0) or 0)
         # Confirmar posiciones de tendencia ya visibles; limpiar SOLO las que estaban
         # confirmadas y han desaparecido (stop ejecutado) -> evita doble entrada por
         # latencia de fill (la posición recién abierta aún no aparece en user_state).
         self.trend_confirmed |= (self.trend_open & open_coins)
         gone = self.trend_confirmed - open_coins
         self.trend_open -= gone
-        self.stops_placed -= gone
         self.trend_confirmed -= gone
+        for c in gone:
+            oid = self.stop_oids.get(c)
+            if oid is not None:
+                try:
+                    self.client.cancel_order(c, oid)
+                except Exception as e:
+                    self.store.record_risk_event(self.session_id, "stop_error", str(e))
+            self.stop_levels.pop(c, None)
+            self.stop_oids.pop(c, None)
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
+            ms.inventory = pos_sizes.get(coin, 0.0)
             # #4: al entrar en régimen de tendencia, cancelar una vez el grid en reposo
             # (deja de mezclar inventario grid con la entrada de tendencia).
             trending = self.trends[coin].is_trending(ms)
-            if trending and coin not in self.trend_regime:
+            if trending and coin not in self.trend_regime and coin not in self.trend_open:
                 self.client.cancel_all(coin)
                 self.trend_regime.add(coin)
             elif not trending:
                 self.trend_regime.discard(coin)
-            resting = self._resting_prices(coin)
-            if resting is None:
-                continue  # no pudimos leer ordenes en reposo: no operar este par este tick
             decisions = self._decisions_for(ms)
+            grid_active = (coin not in self.trend_open
+                           and not self.trends[coin].is_trending(ms))
+            if grid_active and self.state != SessionState.CLOSING:
+                self._reconcile_grid(coin, ms, decisions, n_open, equity, gross,
+                                     pos_notionals.get(coin, 0.0))
             for d in decisions:
+                if d.action == ActionType.PLACE_LIMIT and not d.reduce_only:
+                    continue  # los PLACE_LIMIT de grid los gestiona _reconcile_grid
                 if self.state == SessionState.CLOSING and not (
                     d.reduce_only or d.action in (ActionType.CLOSE, ActionType.SET_STOP)
                 ):
-                    continue
-                if d.action == ActionType.PLACE_LIMIT and self._has_resting_near(d, resting, ms):
                     continue
                 self._apply(coin, ms, d, n_open, equity, gross,
                             pos_notionals.get(coin, 0.0))
         if self.state == SessionState.CLOSING and n_open == 0:
             self._reset()
+
+    def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
+        try:
+            desired = [(d.price, d) for d in decisions if d.action == ActionType.PLACE_LIMIT]
+            grid = self.grids[coin]
+            tol = max(grid.half_spread(ms, grid._sigma(ms)) / 2.0, 1e-9)
+            open_orders = self.client.open_orders(coin)
+            # 1) cancelar stale: órdenes en reposo lejos de cualquier precio deseado
+            for o in open_orders:
+                px = float(o.get("limitPx", 0) or 0)
+                oid = o.get("oid")
+                if oid is None:
+                    continue
+                if not any(abs(px - dp) <= tol for dp, _ in desired):
+                    self.client.cancel_order(coin, oid)
+            # 2) colocar las deseadas que no tengan ya una orden cerca (guards vía _apply/_risk_ok)
+            rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
+            for dp, d in desired:
+                if any(abs(dp - rp) <= tol for rp in rest_px):
+                    continue
+                self._apply(coin, ms, d, n_open, equity, gross, coin_notional)
+        except Exception as e:
+            self.store.record_risk_event(self.session_id, "reconcile_error", str(e))
+            return
 
     def _apply(self, coin: str, ms: MarketState, d, n_open: int,
                equity: float, gross: float, coin_notional: float) -> None:
@@ -254,11 +286,36 @@ class SessionEngine:
         elif d.action == ActionType.CLOSE:
             self.client.market_close(coin)
         elif d.action == ActionType.SET_STOP:
-            if coin in self.stops_placed or d.side is None or d.price is None:
+            if d.side is None or d.price is None:
                 return
-            self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0,
-                                   reduce_only=True)
-            self.stops_placed.add(coin)
+            closes = [c.close for c in ms.candles]
+            highs = [c.high for c in ms.candles]
+            lows = [c.low for c in ms.candles]
+            atr_ = atr(highs, lows, closes, self.cfg.atr_period)[-1] if len(closes) > self.cfg.atr_period else 0.0
+            thr = max(0.1 * atr_, 1e-9)
+            cur = self.stop_levels.get(coin)
+            is_long_stop = (d.side == Side.SELL)   # stop de venta protege un largo
+            if cur is None:
+                try:
+                    res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
+                    self.stop_levels[coin] = d.price
+                    self.stop_oids[coin] = res.get("oid")
+                except Exception as e:
+                    self.store.record_risk_event(self.session_id, "stop_error", str(e))
+                    return
+            else:
+                improves = (d.price > cur + thr) if is_long_stop else (d.price < cur - thr)
+                if improves:
+                    old = self.stop_oids.get(coin)
+                    try:
+                        if old is not None:
+                            self.client.cancel_order(coin, old)
+                        res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
+                        self.stop_levels[coin] = d.price
+                        self.stop_oids[coin] = res.get("oid")
+                    except Exception as e:
+                        self.store.record_risk_event(self.session_id, "stop_error", str(e))
+                        return
         self.store.record_decision(self.session_id, coin, d.action.value, d.reason)
 
     def snapshot(self, market_states: dict[str, MarketState] | None = None) -> dict:

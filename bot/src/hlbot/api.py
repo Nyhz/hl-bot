@@ -28,7 +28,7 @@ class LaunchBody(BaseModel):
     capital: float
     limits: LimitsBody
     grid_n: int = 10
-    grid_range_pct: float = 0.03
+    grid_range_pct: float = 0.02
     adx_threshold: float = 25.0
 
 

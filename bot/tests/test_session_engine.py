@@ -10,12 +10,14 @@ class FakeClient:
         self.closed = []
         self.stops = []
         self.canceled = []
+        self.canceled_oids = []
         self.resting = []
         self._mid = {"ETH": 3000.0}
         self.account_value = "40"
         self.positions = []
         self.leverage_set = []
         self.market_opens = []
+        self._next_oid = 1000
     def mid(self, coin): return self._mid[coin]
     def set_leverage(self, coin, leverage, is_cross=False):
         self.leverage_set.append((coin, leverage, is_cross)); return {"status": "ok"}
@@ -25,9 +27,16 @@ class FakeClient:
         return {"assetPositions": self.positions,
                 "marginSummary": {"accountValue": self.account_value}}
     def place_limit(self, coin, is_buy, price, size, post_only=True, reduce_only=False):
-        self.orders.append((coin, is_buy, price, size, reduce_only, post_only)); return {"status": "ok"}
+        self._next_oid += 1
+        self.orders.append((coin, is_buy, price, size, reduce_only, post_only))
+        self.resting.append({"coin": coin, "limitPx": price, "sz": size, "oid": self._next_oid})
+        return {"status": "ok"}
+    def cancel_order(self, coin, oid):
+        self.canceled_oids.append((coin, oid))
     def place_stop(self, coin, is_buy, trigger_px, size, reduce_only=True):
-        self.stops.append((coin, is_buy, trigger_px, size, reduce_only)); return {"status": "ok"}
+        self._next_oid += 1
+        self.stops.append((coin, is_buy, trigger_px, size, reduce_only))
+        return {"resp": {"status": "ok"}, "oid": self._next_oid}
     def market_close(self, coin): self.closed.append(coin); return {"status": "ok"}
     def cancel_all(self, coin): self.canceled.append(coin)
     def open_orders(self, coin): return list(self.resting)
@@ -180,17 +189,28 @@ def test_launch_rejects_position_below_min():
     with pytest.raises(ValueError):
         eng.launch(cfg)
 
-def test_grid_skips_rungs_with_resting_order():
+def test_grid_reconcile_cancels_stale_and_places_missing():
     client = FakeClient()
     eng = SessionEngine(client, FakeStore())
     eng.launch(_cfg())
-    eng.tick(_flat_ms())                       # 1er tick coloca rungs
-    placed = [o[2] for o in client.orders]     # precios colocados
-    assert placed
-    client.resting = [{"limitPx": p} for p in placed]   # ahora en reposo (forma de open_orders)
-    client.orders.clear()
-    eng.tick(_flat_ms())                       # 2º tick: no debe duplicar
+    eng.tick(_flat_ms())                       # coloca la escalera inicial
+    n_first = len(client.orders)
+    assert n_first > 0
+    # mover el mid -> la referencia se mueve -> rungs viejos quedan stale
+    moved = _flat_ms()
+    moved["ETH"].mid = 3000.0 * 1.01           # mid se mueve -> la referencia se mueve
+    eng.tick(moved)
+    assert client.canceled_oids                # canceló al menos un rung stale
+
+def test_grid_reconcile_no_churn_when_unchanged():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())
+    client.orders.clear(); client.canceled_oids.clear()
+    eng.tick(_flat_ms())                       # mismo estado -> sin cambios
     assert client.orders == []
+    assert client.canceled_oids == []
 
 
 def test_close_cancels_resting_orders():
@@ -332,3 +352,81 @@ def test_trend_reentry_after_external_close():
     client.positions = []                                 # stop ejecutado -> cerrada
     eng.tick(_flat_ms())                                  # permite reentrada
     assert len(client.market_opens) == 2
+
+def test_tick_populates_inventory_from_user_state():
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.0064", "positionValue": "10.1"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    eng.tick(ms)
+    assert abs(ms["ETH"].inventory - 0.0064) < 1e-9
+
+
+def test_engine_trailing_stop_only_improves(monkeypatch):
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.004", "positionValue": "12"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+
+    levels = iter([2940.0, 2950.0, 2945.0])  # mejora, mejora, empeora
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.SET_STOP, side=Side.SELL,
+                             price=next(levels), size=0.004, reduce_only=True, reason="trail")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())   # coloca stop 2940
+    eng.tick(_flat_ms())   # 2950 mejora -> cancela+recoloca
+    eng.tick(_flat_ms())   # 2945 empeora -> no toca
+    assert len(client.stops) == 2          # solo dos colocaciones (inicial + 1 mejora)
+    assert len(client.canceled_oids) == 1  # canceló el trigger viejo una vez
+
+
+def test_regime_does_not_cancel_while_trend_position_held():
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.004", "positionValue": "12"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+    before = len(client.canceled)
+    eng.tick(_flat_ms())
+    assert len(client.canceled) == before   # no se cancela el grid/stop mientras hay posición de tendencia
+
+
+def test_engine_trailing_stop_short_only_improves(monkeypatch):
+    """BUY stop trailing para posición corta: mejora bajando, no sube."""
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "-0.004", "positionValue": "12"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+
+    # Con velas planas ATR≈1, thr≈0.1; un salto de 10 mejora (baja), uno de 5 empeora (sube).
+    levels = iter([2060.0, 2050.0, 2055.0])  # inicial, mejora DOWN, empeora UP -> no toca
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.SET_STOP, side=Side.BUY,
+                             price=next(levels), size=0.004, reduce_only=True, reason="trail")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())   # coloca BUY stop a 2060
+    eng.tick(_flat_ms())   # 2050 < 2060 - 0.1 -> mejora -> cancela + recoloca
+    eng.tick(_flat_ms())   # 2055 > 2050 -> empeora -> no toca
+    assert len(client.stops) == 2          # solo dos colocaciones (inicial + 1 mejora)
+    assert len(client.canceled_oids) == 1  # canceló el stop viejo una vez

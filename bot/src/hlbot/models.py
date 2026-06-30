@@ -39,6 +39,7 @@ class MarketState:
     mid: float
     candles: list[Candle] = field(default_factory=list)
     funding_rate: float | None = None
+    inventory: float = 0.0
 
 
 @dataclass
@@ -87,14 +88,20 @@ class SessionConfig:
     capital: float
     limits: RiskLimits
     grid_n: int = 10
-    grid_range_pct: float = 0.03
-    grid_spacing_pct: float = 0.003
+    grid_range_pct: float = 0.02        # clamp de rango máximo del grid respecto a la referencia
     ema_fast: int = 9
     ema_slow: int = 21
     adx_period: int = 14
     adx_threshold: float = 25.0
     atr_period: int = 14
     atr_stop_mult: float = 2.0
+    # Avellaneda-Stoikov + funding
+    skew_strength: float = 1.5
+    spread_vol_mult: float = 0.5
+    min_spread_frac: float = 0.001
+    funding_tilt: float = 0.3
+    funding_min: float = 0.00005
+    ema_sep_frac: float = 0.001
 
 
 @dataclass

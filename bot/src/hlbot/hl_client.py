@@ -121,6 +121,11 @@ class HLClient:
             if o["coin"] == coin:
                 self.exchange.cancel(coin, o["oid"])
 
+    def cancel_order(self, coin: str, oid: int) -> None:
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self.exchange.cancel(coin, oid)
+
     def open_orders(self, coin: str) -> list[dict]:
         return [o for o in self.info.open_orders(self.address) if o.get("coin") == coin]
 
@@ -135,8 +140,14 @@ class HLClient:
         sz = round_size(size, szd)
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
-        return self.exchange.order(coin, is_buy, sz, limit, stop_order_type(trig),
+        resp = self.exchange.order(coin, is_buy, sz, limit, stop_order_type(trig),
                                    reduce_only=reduce_only)
+        try:
+            st = resp["response"]["data"]["statuses"][0]
+            oid = (st.get("resting") or st.get("filled") or {}).get("oid")
+        except (KeyError, IndexError, TypeError):
+            oid = None
+        return {"resp": resp, "oid": oid}
 
     def user_fills(self) -> list[dict]:
         return self.info.user_fills(self.address)

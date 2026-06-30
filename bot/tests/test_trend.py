@@ -6,10 +6,23 @@ def _cfg():
     return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits)
 
 def _uptrend_candles(n=60):
+    # Accelerating uptrend with periodic pullbacks so ADX rises toward the end (proving all three clauses pass).
     out = []
+    price = 10.0
     for i in range(1, n + 1):
-        c = float(i)
-        out.append(Candle(t=i, open=c - 0.5, high=c + 0.5, low=c - 0.5, close=c, volume=1.0))
+        if i % 7 == 0:
+            move = -0.3
+        else:
+            move = 0.4 + (i / n) * 1.5
+
+        price += move
+        volatility = 0.2 + (i / n) * 0.5
+        close = price
+        high = close + volatility
+        low = close - volatility - 0.1
+        open_ = close - move/2
+
+        out.append(Candle(t=i, open=open_, high=high, low=low, close=close, volume=1.0))
     return out
 
 def _flat_candles(n=60):
@@ -24,6 +37,15 @@ def test_is_trending_true_in_strong_uptrend():
 def test_is_trending_false_when_flat():
     s = TrendOverlayStrategy(_cfg())
     ms = MarketState(coin="ETH", mid=100.0, candles=_flat_candles())
+    assert s.is_trending(ms) is False
+
+def test_entry_rejected_when_ema_separation_too_small():
+    # Mismo régimen alcista (ADX alto y creciente) pero con umbral de separación imposible
+    # -> is_trending debe ser False POR la cláusula de separación de EMAs, no por ADX.
+    cfg = _cfg()
+    cfg.ema_sep_frac = 1.0          # 100% de separación: imposible -> aísla la cláusula
+    s = TrendOverlayStrategy(cfg)
+    ms = MarketState(coin="ETH", mid=60.0, candles=_uptrend_candles())
     assert s.is_trending(ms) is False
 
 def test_evaluate_opens_long_with_stop_in_uptrend():
@@ -46,11 +68,39 @@ def test_conditions_expose_adx():
     assert "adx" in names
 
 def _downtrend_candles(n=60):
+    # Accelerating downtrend with periodic bounces so ADX rises toward the end
+    # (mirrors the structure of _uptrend_candles so all three is_trending clauses pass).
     out = []
+    price = 60.0
     for i in range(1, n + 1):
-        c = float(n - i + 1)  # precio descendente
-        out.append(Candle(t=i, open=c + 0.5, high=c + 0.5, low=c - 0.5, close=c, volume=1.0))
+        if i % 7 == 0:
+            move = 0.3   # bounce
+        else:
+            move = -(0.4 + (i / n) * 1.5)   # accelerating descent
+        price += move
+        volatility = 0.2 + (i / n) * 0.5
+        close = price
+        high = close + volatility
+        low = close - volatility - 0.1
+        open_ = close - move / 2
+        out.append(Candle(t=i, open=open_, high=high, low=low, close=close, volume=1.0))
     return out
+
+def test_evaluate_closes_on_ema_reversal_when_long():
+    s = TrendOverlayStrategy(_cfg())
+    # tendencia bajista (ef<es) pero inventario LARGO -> debe cerrar
+    candles = _downtrend_candles()
+    ms = MarketState(coin="ETH", mid=1.0, candles=candles, inventory=0.004)
+    actions = [d.action for d in s.evaluate(ms)]
+    assert ActionType.CLOSE in actions
+
+def test_evaluate_emits_trailing_stop_when_in_position():
+    s = TrendOverlayStrategy(_cfg())
+    candles = _uptrend_candles()
+    ms = MarketState(coin="ETH", mid=60.0, candles=candles, inventory=0.004)  # largo en alza
+    ds = s.evaluate(ms)
+    assert any(d.action == ActionType.SET_STOP and d.side == Side.SELL for d in ds)
+    assert all(d.action != ActionType.PLACE_MARKET for d in ds)   # no reabre
 
 def test_evaluate_opens_short_with_stop_in_downtrend():
     from hlbot.indicators import atr as _atr
