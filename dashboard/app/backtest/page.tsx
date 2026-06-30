@@ -11,10 +11,11 @@ export default function BacktestPage() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [runId, setRunId] = useState(0);
   useEffect(() => { api.getCoins().then(setCoins).catch(() => {}); }, []);
   async function run(p: BacktestParams) {
     setBusy(true); setError(null);
-    try { setResult(await api.runBacktest(p)); }
+    try { setResult(await api.runBacktest(p)); setRunId((n) => n + 1); }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
@@ -28,7 +29,7 @@ export default function BacktestPage() {
         <div className="terminal-col"><BacktestForm coins={coins} busy={busy} onRun={run} /></div>
         <div className="terminal-col">
           {error && <div className="panel" style={{ padding: 12, color: "var(--neon-red)" }}>{error}</div>}
-          {result ? <BacktestResults result={result} /> : <div className="panel muted" style={{ padding: 12 }}>configura y pulsa RUN</div>}
+          {result ? <BacktestResults key={runId} result={result} /> : <div className="panel muted" style={{ padding: 12 }}>configura y pulsa RUN</div>}
         </div>
       </div>
     </main>
