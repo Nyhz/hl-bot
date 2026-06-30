@@ -6,6 +6,7 @@ from hlbot.models import (
 from hlbot.strategy.grid import GridStrategy
 from hlbot.strategy.trend import TrendOverlayStrategy
 from hlbot.risk import RiskManager
+from hlbot.indicators import atr
 
 
 class SessionEngine:
@@ -24,7 +25,6 @@ class SessionEngine:
         self.day_anchor_value: float = 0.0
         self.day_anchor_date = None
         self.trend_open: set[str] = set()
-        self.stops_placed: set[str] = set()
         self.stop_levels: dict[str, float] = {}
         self.stop_oids: dict[str, int] = {}
         self.trend_confirmed: set[str] = set()
@@ -64,7 +64,6 @@ class SessionEngine:
         self.day_anchor_value = self.session_start_value
         self.day_anchor_date = self._today_local()
         self.trend_open = set()
-        self.stops_placed = set()
         self.stop_levels = {}
         self.stop_oids = {}
         self.trend_confirmed = set()
@@ -103,7 +102,6 @@ class SessionEngine:
         self.day_anchor_value = 0.0
         self.day_anchor_date = None
         self.trend_open = set()
-        self.stops_placed = set()
         self.stop_levels = {}
         self.stop_oids = {}
         self.trend_confirmed = set()
@@ -186,7 +184,6 @@ class SessionEngine:
         self.trend_confirmed |= (self.trend_open & open_coins)
         gone = self.trend_confirmed - open_coins
         self.trend_open -= gone
-        self.stops_placed -= gone
         self.trend_confirmed -= gone
         for c in gone:
             self.stop_levels.pop(c, None)
@@ -285,28 +282,34 @@ class SessionEngine:
         elif d.action == ActionType.SET_STOP:
             if d.side is None or d.price is None:
                 return
-            from hlbot.indicators import atr as _atr
             closes = [c.close for c in ms.candles]
             highs = [c.high for c in ms.candles]
             lows = [c.low for c in ms.candles]
-            atr_ = _atr(highs, lows, closes, self.cfg.atr_period)[-1] if len(closes) > self.cfg.atr_period else 0.0
+            atr_ = atr(highs, lows, closes, self.cfg.atr_period)[-1] if len(closes) > self.cfg.atr_period else 0.0
             thr = max(0.1 * atr_, 1e-9)
             cur = self.stop_levels.get(coin)
             is_long_stop = (d.side == Side.SELL)   # stop de venta protege un largo
             if cur is None:
-                res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
-                self.stop_levels[coin] = d.price
-                self.stop_oids[coin] = res.get("oid")
-                self.stops_placed.add(coin)
+                try:
+                    res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
+                    self.stop_levels[coin] = d.price
+                    self.stop_oids[coin] = res.get("oid")
+                except Exception as e:
+                    self.store.record_risk_event(self.session_id, "stop_error", str(e))
+                    return
             else:
                 improves = (d.price > cur + thr) if is_long_stop else (d.price < cur - thr)
                 if improves:
                     old = self.stop_oids.get(coin)
-                    if old is not None:
-                        self.client.cancel_order(coin, old)
-                    res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
-                    self.stop_levels[coin] = d.price
-                    self.stop_oids[coin] = res.get("oid")
+                    try:
+                        if old is not None:
+                            self.client.cancel_order(coin, old)
+                        res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
+                        self.stop_levels[coin] = d.price
+                        self.stop_oids[coin] = res.get("oid")
+                    except Exception as e:
+                        self.store.record_risk_event(self.session_id, "stop_error", str(e))
+                        return
         self.store.record_decision(self.session_id, coin, d.action.value, d.reason)
 
     def snapshot(self, market_states: dict[str, MarketState] | None = None) -> dict:

@@ -386,3 +386,30 @@ def test_engine_trailing_stop_only_improves(monkeypatch):
     eng.tick(_flat_ms())   # 2945 empeora -> no toca
     assert len(client.stops) == 2          # solo dos colocaciones (inicial + 1 mejora)
     assert len(client.canceled_oids) == 1  # canceló el trigger viejo una vez
+
+
+def test_engine_trailing_stop_short_only_improves(monkeypatch):
+    """BUY stop trailing para posición corta: mejora bajando, no sube."""
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "-0.004", "positionValue": "12"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+
+    # Con velas planas ATR≈1, thr≈0.1; un salto de 10 mejora (baja), uno de 5 empeora (sube).
+    levels = iter([2060.0, 2050.0, 2055.0])  # inicial, mejora DOWN, empeora UP -> no toca
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.SET_STOP, side=Side.BUY,
+                             price=next(levels), size=0.004, reduce_only=True, reason="trail")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())   # coloca BUY stop a 2060
+    eng.tick(_flat_ms())   # 2050 < 2060 - 0.1 -> mejora -> cancela + recoloca
+    eng.tick(_flat_ms())   # 2055 > 2050 -> empeora -> no toca
+    assert len(client.stops) == 2          # solo dos colocaciones (inicial + 1 mejora)
+    assert len(client.canceled_oids) == 1  # canceló el stop viejo una vez
