@@ -1,29 +1,40 @@
 "use client";
+import { useState } from "react";
 import { useLiveSnapshot } from "@/lib/useLiveSnapshot";
-import { fmtUsd } from "@/lib/format";
+import { HeaderBar } from "@/components/HeaderBar";
+import { StatTiles } from "@/components/StatTiles";
+import { EquityHero } from "@/components/EquityHero";
+import { EquityCurve } from "@/components/EquityCurve";
+import { OpenPositions } from "@/components/OpenPositions";
+import { Watchlist } from "@/components/Watchlist";
+import { FocusChart } from "@/components/FocusChart";
+import { Tape } from "@/components/Tape";
 
 export default function Home() {
   const { snapshot, connected } = useLiveSnapshot();
-  const mode = snapshot?.mode ?? "testnet";
-  const modeColor = mode === "mainnet" ? "var(--neon-green)" : "var(--neon-amber)";
-  const equity = snapshot?.account?.equity ?? 0;
+  const [focusCoin, setFocusCoin] = useState<string | null>(null);
+
+  // Default focus: first position or first watchlist coin (derived state — no effect needed)
+  const displayedCoin = focusCoin ?? snapshot?.positions[0]?.coin ?? snapshot?.watchlist[0] ?? null;
 
   return (
-    <main style={{ padding: 24, minHeight: "100vh" }}>
-      <header style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <span className="glow" style={{ color: modeColor, fontWeight: 700 }}>
-          NYHZ // MICRO-DEGEN TERMINAL
-        </span>
-        <span className="muted">{snapshot?.state ?? "—"}</span>
-        <span style={{ color: modeColor }}>{mode.toUpperCase()}</span>
-        <span style={{ color: connected ? "var(--neon-green)" : "var(--neon-red)" }}>
-          {connected ? "● LIVE" : "○ OFFLINE"}
-        </span>
-      </header>
-      <section style={{ marginTop: 32 }}>
-        <div className="muted" style={{ fontSize: 12 }}>EQUITY</div>
-        <div style={{ fontSize: 48, fontWeight: 700 }}>{fmtUsd(equity)}</div>
-      </section>
+    <main style={{ padding: 12, display: "flex", flexDirection: "column", gap: 12, minHeight: "100vh" }}>
+      <HeaderBar snapshot={snapshot} connected={connected} />
+      {snapshot && (
+        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 12 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <EquityHero account={snapshot.account} />
+            <EquityCurve sessionId={snapshot.session_id} />
+            <StatTiles account={snapshot.account} />
+            <OpenPositions positions={snapshot.positions} coins={snapshot.coins} onFocus={setFocusCoin} />
+            <Tape events={snapshot.tape_recent} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <FocusChart coin={displayedCoin} coinView={displayedCoin ? snapshot.coins[displayedCoin] : undefined} />
+            <Watchlist coins={snapshot.coins} positions={snapshot.positions} onFocus={setFocusCoin} />
+          </div>
+        </div>
+      )}
     </main>
   );
 }
