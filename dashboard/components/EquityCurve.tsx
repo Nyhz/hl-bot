@@ -4,7 +4,7 @@ import { createChart, AreaSeries, type IChartApi, type ISeriesApi } from "lightw
 import { api } from "@/lib/api";
 import { equitySeries } from "@/lib/view";
 
-export function EquityCurve({ sessionId, equity }: { sessionId: number | null; equity: number }) {
+export function EquityCurve({ sessionId, equity, seed }: { sessionId: number | null; equity: number; seed?: { ts: number; total_pnl: number }[] }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
   const lastTimeRef = useRef<number>(0);
@@ -22,11 +22,12 @@ export function EquityCurve({ sessionId, equity }: { sessionId: number | null; e
     });
     seriesRef.current = series;
     let cancelled = false;
-    if (sessionId !== null) {
+    if (seed && seed.length) {
+      series.setData(equitySeries(seed) as never);
+    } else if (sessionId !== null) {
       api.getEquityCurve(sessionId).then((rows) => {
         if (!cancelled) {
-          const data = equitySeries(rows);
-          series.setData(data as never);
+          series.setData(equitySeries(rows) as never);
           lastTimeRef.current = rows.length ? rows[rows.length - 1].ts : 0;
         }
       }).catch(() => {});
@@ -37,7 +38,7 @@ export function EquityCurve({ sessionId, equity }: { sessionId: number | null; e
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => { cancelled = true; ro.disconnect(); chart.remove(); seriesRef.current = null; };
-  }, [sessionId]);
+  }, [sessionId, seed]);
 
   useEffect(() => {
     const s = seriesRef.current;
