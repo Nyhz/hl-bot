@@ -80,7 +80,8 @@ def create_app(engine: SessionEngine, control_token: str,
         except Exception as e:
             print(f"[snapshot] error: {e}", flush=True)
             return {"state": getattr(engine.state, "value", "idle"), "paused": engine.paused,
-                    "mode": "testnet", "session_id": engine.session_id,
+                    "mode": "testnet" if getattr(getattr(engine.client, "cfg", None), "testnet", True) else "mainnet",
+                    "session_id": engine.session_id,
                     "session_started_at": engine.session_started_at,
                     "watchlist": [], "coins": {}, "account": {}, "positions": [], "tape_recent": []}
 
@@ -135,9 +136,9 @@ def create_app(engine: SessionEngine, control_token: str,
     @app.post("/limits")
     def update_limits(body: LimitsBody, x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
-        if engine.risk is None:
-            raise HTTPException(status_code=409, detail="no hay sesion activa")
         with engine.lock:
+            if engine.risk is None:
+                raise HTTPException(status_code=409, detail="no hay sesion activa")
             engine.risk.limits = RiskLimits(**body.model_dump())
         return {"ok": True}
 
