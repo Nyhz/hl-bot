@@ -43,3 +43,18 @@ export interface SessionDetail {
   equity_curve: { ts: number; total_pnl: number }[];
   decisions: { ts: number; coin: string; action: string; reason: string }[];
 }
+export interface BacktestParams {
+  coin: string; capital: number; interval?: string; n_candles: number;
+  grid_n?: number; grid_range_pct?: number; skew_strength?: number; spread_vol_mult?: number;
+  adx_threshold?: number; atr_stop_mult?: number; max_position_notional?: number; max_coin_notional?: number;
+}
+export interface BacktestMetrics {
+  start_equity: number; final_equity: number; net_pnl: number; realized_pnl: number;
+  fees: number; funding: number; n_trades: number; win_rate: number; max_drawdown: number;
+}
+export interface BacktestResult {
+  metrics: BacktestMetrics;
+  equity_curve: { ts: number; total_pnl: number }[];
+  trades: { coin: string; dir: string; price: number; size: number; fee: number; closed_pnl: number; ts: number }[];
+  decisions: { ts: number; coin: string; action: string; reason: string }[];
+}
