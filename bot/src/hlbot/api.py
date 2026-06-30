@@ -147,7 +147,10 @@ def create_app(engine: SessionEngine, control_token: str,
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(_full_snapshot())
+                # _full_snapshot hace I/O de BD (lectura): fuera del event loop para que
+                # el heartbeat del WS nunca se bloquee (mismo motivo que el tick).
+                snap = await asyncio.to_thread(_full_snapshot)
+                await websocket.send_json(snap)
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return
