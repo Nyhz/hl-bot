@@ -21,6 +21,7 @@ class BacktestBroker:
         self._price: dict[str, float] = {}
         self._ts = 0
         self._next_oid = 1000
+        self._last_funding_hour = None
 
     # --- setters del runner ---
     def set_price(self, coin: str, px: float) -> None:
@@ -28,6 +29,8 @@ class BacktestBroker:
 
     def set_ts(self, ts: int) -> None:
         self._ts = ts
+        if self._last_funding_hour is None:
+            self._last_funding_hour = ts // 3600
 
     # --- interfaz cliente ---
     def mid(self, coin: str) -> float:
@@ -139,3 +142,43 @@ class BacktestBroker:
             "fee": fee, "closed_pnl": closed_pnl, "ts": self._ts,
         })
         return closed_pnl
+
+    def step(self, coin, candle, funding_rate):
+        # 1) fills maker (órdenes no-trigger) al cruzar el rango de la vela
+        still: list[dict] = []
+        for o in self.resting.get(coin, []):
+            if o["is_trigger"]:
+                still.append(o); continue
+            crossed = (candle.low <= o["limitPx"]) if o["is_buy"] else (candle.high >= o["limitPx"])
+            if crossed:
+                self._apply_fill(coin, o["is_buy"], o["limitPx"], o["sz"], MAKER_FEE,
+                                 reduce_only=o["reduce_only"])
+            else:
+                still.append(o)
+        self.resting[coin] = still
+        # 2) stops (trigger) al cruzar triggerPx
+        still2: list[dict] = []
+        for o in self.resting.get(coin, []):
+            if not o["is_trigger"]:
+                still2.append(o); continue
+            fired = (candle.low <= o["triggerPx"]) if not o["is_buy"] else (candle.high >= o["triggerPx"])
+            if fired and self.positions.get(coin, {"size": 0})["size"] != 0:
+                self._apply_fill(coin, o["is_buy"], o["triggerPx"],
+                                 abs(self.positions[coin]["size"]), TAKER_FEE, reduce_only=True)
+            else:
+                still2.append(o)
+        self.resting[coin] = still2
+        # 3) funding horario sobre el notional de la posición
+        ts = candle.t // 1000
+        hour = ts // 3600
+        if funding_rate is not None and self._last_funding_hour is not None and hour > self._last_funding_hour:
+            p = self.positions.get(coin, {"size": 0.0, "entry": 0.0})
+            if p["size"] != 0:
+                notional = abs(p["size"]) * candle.close
+                pay = funding_rate * notional * (1 if p["size"] > 0 else -1)  # largo paga si funding>0
+                self.cash -= pay
+                self.funding_total += pay
+        self._last_funding_hour = hour
+        # 4) avanzar precio/ts
+        self._price[coin] = candle.close
+        self._ts = ts
