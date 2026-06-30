@@ -158,11 +158,11 @@ class BacktestBroker:
         self.resting[coin] = still
         # 2) stops (trigger) al cruzar triggerPx
         still2: list[dict] = []
-        for o in self.resting.get(coin, []):
+        for o in still:
             if not o["is_trigger"]:
                 still2.append(o); continue
             fired = (candle.low <= o["triggerPx"]) if not o["is_buy"] else (candle.high >= o["triggerPx"])
-            if fired and self.positions.get(coin, {"size": 0})["size"] != 0:
+            if fired and self.positions.get(coin, {"size": 0.0})["size"] != 0:
                 self._apply_fill(coin, o["is_buy"], o["triggerPx"],
                                  abs(self.positions[coin]["size"]), TAKER_FEE, reduce_only=True)
             else:
