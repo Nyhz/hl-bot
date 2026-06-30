@@ -27,13 +27,13 @@ class GridStrategy:
 
     def _phi_target(self, ms: MarketState) -> float:
         # Fracción objetivo de inventario (de max_coin_notional) según funding.
-        # Funding positivo → phi_target positivo (sesgo largo): e = phi - phi_target < 0
-        # cuando inventory es flat → res = mid + |e|*k*sigma > mid (buy rungs más cerca
-        # del mid → se llenan antes → acumula largo para capturar funding).
+        # Funding positivo → phi_target negativo (sesgo corto): e = phi - phi_target > 0
+        # cuando inventory es flat → res = mid - e*k*sigma < mid (sell rungs más cerca
+        # del mid → se llenan antes → acumula corto para cobrar funding).
         f = ms.funding_rate
         if f is None or abs(f) < self.cfg.funding_min:
             return 0.0
-        return (1.0 if f > 0 else -1.0) * self.cfg.funding_tilt
+        return -(1.0 if f > 0 else -1.0) * self.cfg.funding_tilt
 
     def reservation_price(self, ms: MarketState, sigma: float) -> float:
         cap = self.cfg.limits.max_coin_notional

@@ -40,11 +40,11 @@ def test_half_spread_grows_with_volatility():
     assert hi > lo
 
 def test_funding_positive_targets_short_reservation():
-    # funding positivo (largos pagan) y estando flat -> objetivo corto -> referencia > mid
+    # funding positivo (largos pagan) -> objetivo corto -> referencia < mid (vende cerca del mid, acumula corto, cobra funding)
     g = GridStrategy(_cfg())
     ms = _ms(inventory=0.0, funding=0.001)
     sigma = g._sigma(ms)
-    assert g.reservation_price(ms, sigma) > ms.mid
+    assert g.reservation_price(ms, sigma) < ms.mid
 
 def test_evaluate_rungs_are_ten_dollars_and_dont_cross_mid():
     g = GridStrategy(_cfg())
