@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import type { Snapshot } from "@/lib/types";
 import { fmtAge } from "@/lib/view";
 
@@ -16,6 +17,8 @@ export function HeaderBar({ snapshot, connected }: { snapshot: Snapshot | null; 
   return (
     <div className="panel" style={{ display: "flex", alignItems: "center", gap: 16, padding: "10px 16px" }}>
       <span className="glow" style={{ color: modeColor, fontWeight: 700 }}>NYHZ // MICRO-DEGEN TERMINAL</span>
+      <Link href="/" style={{ color: "var(--muted)", textDecoration: "none", fontSize: 12 }}>LIVE</Link>
+      <Link href="/sessions" style={{ color: "var(--muted)", textDecoration: "none", fontSize: 12 }}>HISTORY</Link>
       <span className="muted" style={{ fontSize: 12 }}>toy fund · céntimos pa&apos; arriba</span>
       <span style={{ marginLeft: "auto", color: modeColor, fontWeight: 700 }}>{mode.toUpperCase()}</span>
       <span className={connected ? "live-pulse" : undefined} style={{ color: connected ? "var(--neon-green)" : "var(--neon-red)" }}>{connected ? "● LIVE" : "○ OFFLINE"}</span>

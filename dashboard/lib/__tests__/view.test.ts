@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { fmtAge, pnlColor, equitySeries, positionView, conditionPct, candleSeries } from "../view";
+import { fmtAge, fmtDuration, pnlColor, equitySeries, positionView, conditionPct, candleSeries } from "../view";
 import type { Position } from "../types";
+
+describe("fmtDuration", () => {
+  it("formats", () => {
+    expect(fmtDuration(null)).toBe("—");
+    expect(fmtDuration(300)).toBe("5m");
+    expect(fmtDuration(3725)).toBe("1h 02m");
+  });
+});
 
 describe("view helpers", () => {
   it("fmtAge", () => {
