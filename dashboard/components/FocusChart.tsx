@@ -26,12 +26,13 @@ export function FocusChart({ coin, coinView, mid, fill }: { coin: string | null;
     });
     chartRef.current = chart; seriesRef.current = series;
     const fit = () => chart.applyOptions(fill
-      ? { width: el.clientWidth, height: el.clientHeight }
+      ? { width: el.clientWidth, height: el.clientHeight || 240 }
       : { width: el.clientWidth });
     fit();
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => { ro.disconnect(); chart.remove(); chartRef.current = null; seriesRef.current = null; };
+    // `fill` se espera estático por instancia; cambiarlo en runtime recrearía el chart sin recargar velas.
   }, [fill]);
 
   // Las velas se recargan al cambiar de par (coin).
