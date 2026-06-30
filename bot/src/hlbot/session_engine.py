@@ -110,19 +110,6 @@ class SessionEngine:
             return trend.evaluate(ms)  # tendencia: pausa el grid de este par
         return grid.evaluate(ms)
 
-    def _resting_prices(self, coin: str) -> list[float] | None:
-        try:
-            return [float(o["limitPx"]) for o in self.client.open_orders(coin)]
-        except Exception:
-            return None
-
-    def _has_resting_near(self, d, resting: list[float], ms: MarketState) -> bool:
-        if d.price is None or not resting:
-            return False
-        step = (2 * self.cfg.grid_range_pct * ms.mid) / self.cfg.grid_n
-        tol = step / 2
-        return any(abs(r - d.price) <= tol for r in resting)
-
     def _account_value(self) -> float:
         state = self.client.user_state()
         return float(state["marginSummary"]["accountValue"])
@@ -207,21 +194,43 @@ class SessionEngine:
                 self.trend_regime.add(coin)
             elif not trending:
                 self.trend_regime.discard(coin)
-            resting = self._resting_prices(coin)
-            if resting is None:
-                continue  # no pudimos leer ordenes en reposo: no operar este par este tick
             decisions = self._decisions_for(ms)
+            grid_active = (coin not in self.trend_open
+                           and not self.trends[coin].is_trending(ms))
+            if grid_active and self.state != SessionState.CLOSING:
+                self._reconcile_grid(coin, ms, decisions, n_open, equity, gross,
+                                     pos_notionals.get(coin, 0.0))
             for d in decisions:
+                if d.action == ActionType.PLACE_LIMIT and not d.reduce_only:
+                    continue  # los PLACE_LIMIT de grid los gestiona _reconcile_grid
                 if self.state == SessionState.CLOSING and not (
                     d.reduce_only or d.action in (ActionType.CLOSE, ActionType.SET_STOP)
                 ):
-                    continue
-                if d.action == ActionType.PLACE_LIMIT and self._has_resting_near(d, resting, ms):
                     continue
                 self._apply(coin, ms, d, n_open, equity, gross,
                             pos_notionals.get(coin, 0.0))
         if self.state == SessionState.CLOSING and n_open == 0:
             self._reset()
+
+    def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
+        desired = [(d.price, d) for d in decisions if d.action == ActionType.PLACE_LIMIT]
+        grid = self.grids[coin]
+        tol = max(grid.half_spread(ms, grid._sigma(ms)) / 2.0, 1e-9)
+        open_orders = self.client.open_orders(coin)
+        # 1) cancelar stale: órdenes en reposo lejos de cualquier precio deseado
+        for o in open_orders:
+            px = float(o.get("limitPx", 0) or 0)
+            oid = o.get("oid")
+            if oid is None:
+                continue
+            if not any(abs(px - dp) <= tol for dp, _ in desired):
+                self.client.cancel_order(coin, oid)
+        # 2) colocar las deseadas que no tengan ya una orden cerca (guards vía _apply/_risk_ok)
+        rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
+        for dp, d in desired:
+            if any(abs(dp - rp) <= tol for rp in rest_px):
+                continue
+            self._apply(coin, ms, d, n_open, equity, gross, coin_notional)
 
     def _apply(self, coin: str, ms: MarketState, d, n_open: int,
                equity: float, gross: float, coin_notional: float) -> None:

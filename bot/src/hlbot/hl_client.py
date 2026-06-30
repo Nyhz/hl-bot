@@ -121,6 +121,11 @@ class HLClient:
             if o["coin"] == coin:
                 self.exchange.cancel(coin, o["oid"])
 
+    def cancel_order(self, coin: str, oid: int) -> None:
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self.exchange.cancel(coin, oid)
+
     def open_orders(self, coin: str) -> list[dict]:
         return [o for o in self.info.open_orders(self.address) if o.get("coin") == coin]
 

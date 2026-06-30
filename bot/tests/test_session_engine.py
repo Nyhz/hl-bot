@@ -10,12 +10,14 @@ class FakeClient:
         self.closed = []
         self.stops = []
         self.canceled = []
+        self.canceled_oids = []
         self.resting = []
         self._mid = {"ETH": 3000.0}
         self.account_value = "40"
         self.positions = []
         self.leverage_set = []
         self.market_opens = []
+        self._next_oid = 1000
     def mid(self, coin): return self._mid[coin]
     def set_leverage(self, coin, leverage, is_cross=False):
         self.leverage_set.append((coin, leverage, is_cross)); return {"status": "ok"}
@@ -25,7 +27,12 @@ class FakeClient:
         return {"assetPositions": self.positions,
                 "marginSummary": {"accountValue": self.account_value}}
     def place_limit(self, coin, is_buy, price, size, post_only=True, reduce_only=False):
-        self.orders.append((coin, is_buy, price, size, reduce_only, post_only)); return {"status": "ok"}
+        self._next_oid += 1
+        self.orders.append((coin, is_buy, price, size, reduce_only, post_only))
+        self.resting.append({"coin": coin, "limitPx": price, "sz": size, "oid": self._next_oid})
+        return {"status": "ok"}
+    def cancel_order(self, coin, oid):
+        self.canceled_oids.append((coin, oid))
     def place_stop(self, coin, is_buy, trigger_px, size, reduce_only=True):
         self.stops.append((coin, is_buy, trigger_px, size, reduce_only)); return {"status": "ok"}
     def market_close(self, coin): self.closed.append(coin); return {"status": "ok"}
@@ -180,17 +187,28 @@ def test_launch_rejects_position_below_min():
     with pytest.raises(ValueError):
         eng.launch(cfg)
 
-def test_grid_skips_rungs_with_resting_order():
+def test_grid_reconcile_cancels_stale_and_places_missing():
     client = FakeClient()
     eng = SessionEngine(client, FakeStore())
     eng.launch(_cfg())
-    eng.tick(_flat_ms())                       # 1er tick coloca rungs
-    placed = [o[2] for o in client.orders]     # precios colocados
-    assert placed
-    client.resting = [{"limitPx": p} for p in placed]   # ahora en reposo (forma de open_orders)
-    client.orders.clear()
-    eng.tick(_flat_ms())                       # 2º tick: no debe duplicar
+    eng.tick(_flat_ms())                       # coloca la escalera inicial
+    n_first = len(client.orders)
+    assert n_first > 0
+    # mover el mid -> la referencia se mueve -> rungs viejos quedan stale
+    moved = _flat_ms()
+    moved["ETH"].mid = 3000.0 * 1.01           # mid se mueve -> la referencia se mueve
+    eng.tick(moved)
+    assert client.canceled_oids                # canceló al menos un rung stale
+
+def test_grid_reconcile_no_churn_when_unchanged():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())
+    client.orders.clear(); client.canceled_oids.clear()
+    eng.tick(_flat_ms())                       # mismo estado -> sin cambios
     assert client.orders == []
+    assert client.canceled_oids == []
 
 
 def test_close_cancels_resting_orders():
