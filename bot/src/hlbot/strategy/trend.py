@@ -59,25 +59,39 @@ class TrendOverlayStrategy:
     def evaluate(self, ms: MarketState) -> list[Decision]:
         if len(ms.candles) < self.cfg.ema_slow:
             return []
-        ef, es, adx_, _, atr_ = self._signals(ms)
-        if adx_ <= self.cfg.adx_threshold:
+        ef, es, adx_now, adx_prev, atr_ = self._signals(ms)
+        if abs(ms.inventory) > 0:
+            long = ms.inventory > 0
+            # salida por reversión
+            if (long and ef < es) or (not long and ef > es):
+                return [Decision(ms.coin, ActionType.CLOSE, reduce_only=True,
+                                 reason="reversión de tendencia (recruce EMA)")]
+            # trailing stop deseado
+            if long:
+                stop = ms.mid - self.cfg.atr_stop_mult * atr_
+                side = Side.SELL
+            else:
+                stop = ms.mid + self.cfg.atr_stop_mult * atr_
+                side = Side.BUY
+            return [Decision(ms.coin, ActionType.SET_STOP, side=side, price=stop,
+                             size=abs(ms.inventory), reduce_only=True, reason="trailing stop ATR")]
+        # flat: entrada solo si la tendencia está confirmada (is_trending filtra todo)
+        if not self.is_trending(ms):
             return []
         if ef > es:
             stop = ms.mid - self.cfg.atr_stop_mult * atr_
             return [
                 Decision(ms.coin, ActionType.PLACE_MARKET, side=Side.BUY,
-                         size=self._size(ms.mid),
-                         reason="tendencia alcista (ADX>umbral, EMA fast>slow)"),
+                         size=self._size(ms.mid), reason="tendencia alcista (ADX>umbral, EMA fast>slow)"),
                 Decision(ms.coin, ActionType.SET_STOP, side=Side.SELL, price=stop,
-                         size=self._size(ms.mid), reduce_only=True, reason="trailing stop ATR"),
+                         size=self._size(ms.mid), reduce_only=True, reason="stop inicial ATR"),
             ]
         if ef < es:
             stop = ms.mid + self.cfg.atr_stop_mult * atr_
             return [
                 Decision(ms.coin, ActionType.PLACE_MARKET, side=Side.SELL,
-                         size=self._size(ms.mid),
-                         reason="tendencia bajista (ADX>umbral, EMA fast<slow)"),
+                         size=self._size(ms.mid), reason="tendencia bajista (ADX>umbral, EMA fast<slow)"),
                 Decision(ms.coin, ActionType.SET_STOP, side=Side.BUY, price=stop,
-                         size=self._size(ms.mid), reduce_only=True, reason="trailing stop ATR"),
+                         size=self._size(ms.mid), reduce_only=True, reason="stop inicial ATR"),
             ]
         return []

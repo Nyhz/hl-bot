@@ -34,7 +34,9 @@ class FakeClient:
     def cancel_order(self, coin, oid):
         self.canceled_oids.append((coin, oid))
     def place_stop(self, coin, is_buy, trigger_px, size, reduce_only=True):
-        self.stops.append((coin, is_buy, trigger_px, size, reduce_only)); return {"status": "ok"}
+        self._next_oid += 1
+        self.stops.append((coin, is_buy, trigger_px, size, reduce_only))
+        return {"resp": {"status": "ok"}, "oid": self._next_oid}
     def market_close(self, coin): self.closed.append(coin); return {"status": "ok"}
     def cancel_all(self, coin): self.canceled.append(coin)
     def open_orders(self, coin): return list(self.resting)
@@ -359,3 +361,28 @@ def test_tick_populates_inventory_from_user_state():
     ms = _flat_ms()
     eng.tick(ms)
     assert abs(ms["ETH"].inventory - 0.0064) < 1e-9
+
+
+def test_engine_trailing_stop_only_improves(monkeypatch):
+    from hlbot.models import Decision, ActionType, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.004", "positionValue": "12"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+
+    levels = iter([2940.0, 2950.0, 2945.0])  # mejora, mejora, empeora
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.SET_STOP, side=Side.SELL,
+                             price=next(levels), size=0.004, reduce_only=True, reason="trail")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())   # coloca stop 2940
+    eng.tick(_flat_ms())   # 2950 mejora -> cancela+recoloca
+    eng.tick(_flat_ms())   # 2945 empeora -> no toca
+    assert len(client.stops) == 2          # solo dos colocaciones (inicial + 1 mejora)
+    assert len(client.canceled_oids) == 1  # canceló el trigger viejo una vez

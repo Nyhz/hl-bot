@@ -25,6 +25,8 @@ class SessionEngine:
         self.day_anchor_date = None
         self.trend_open: set[str] = set()
         self.stops_placed: set[str] = set()
+        self.stop_levels: dict[str, float] = {}
+        self.stop_oids: dict[str, int] = {}
         self.trend_confirmed: set[str] = set()
         self.trend_regime: set[str] = set()
 
@@ -63,6 +65,8 @@ class SessionEngine:
         self.day_anchor_date = self._today_local()
         self.trend_open = set()
         self.stops_placed = set()
+        self.stop_levels = {}
+        self.stop_oids = {}
         self.trend_confirmed = set()
         self.trend_regime = set()
         self.paused = False
@@ -100,14 +104,16 @@ class SessionEngine:
         self.day_anchor_date = None
         self.trend_open = set()
         self.stops_placed = set()
+        self.stop_levels = {}
+        self.stop_oids = {}
         self.trend_confirmed = set()
         self.trend_regime = set()
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
         grid = self.grids[ms.coin]
-        if trend.is_trending(ms):
-            return trend.evaluate(ms)  # tendencia: pausa el grid de este par
+        if ms.coin in self.trend_open or trend.is_trending(ms):
+            return trend.evaluate(ms)
         return grid.evaluate(ms)
 
     def _account_value(self) -> float:
@@ -182,6 +188,9 @@ class SessionEngine:
         self.trend_open -= gone
         self.stops_placed -= gone
         self.trend_confirmed -= gone
+        for c in gone:
+            self.stop_levels.pop(c, None)
+            self.stop_oids.pop(c, None)
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
@@ -274,11 +283,30 @@ class SessionEngine:
         elif d.action == ActionType.CLOSE:
             self.client.market_close(coin)
         elif d.action == ActionType.SET_STOP:
-            if coin in self.stops_placed or d.side is None or d.price is None:
+            if d.side is None or d.price is None:
                 return
-            self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0,
-                                   reduce_only=True)
-            self.stops_placed.add(coin)
+            from hlbot.indicators import atr as _atr
+            closes = [c.close for c in ms.candles]
+            highs = [c.high for c in ms.candles]
+            lows = [c.low for c in ms.candles]
+            atr_ = _atr(highs, lows, closes, self.cfg.atr_period)[-1] if len(closes) > self.cfg.atr_period else 0.0
+            thr = max(0.1 * atr_, 1e-9)
+            cur = self.stop_levels.get(coin)
+            is_long_stop = (d.side == Side.SELL)   # stop de venta protege un largo
+            if cur is None:
+                res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
+                self.stop_levels[coin] = d.price
+                self.stop_oids[coin] = res.get("oid")
+                self.stops_placed.add(coin)
+            else:
+                improves = (d.price > cur + thr) if is_long_stop else (d.price < cur - thr)
+                if improves:
+                    old = self.stop_oids.get(coin)
+                    if old is not None:
+                        self.client.cancel_order(coin, old)
+                    res = self.client.place_stop(coin, d.side == Side.BUY, d.price, d.size or 0.0, reduce_only=True)
+                    self.stop_levels[coin] = d.price
+                    self.stop_oids[coin] = res.get("oid")
         self.store.record_decision(self.session_id, coin, d.action.value, d.reason)
 
     def snapshot(self, market_states: dict[str, MarketState] | None = None) -> dict:
