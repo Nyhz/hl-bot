@@ -1,38 +1,49 @@
 #!/bin/bash
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-LABEL="com.hlbot.app"
+BOT_LABEL="com.hlbot.app"
+DASH_LABEL="com.hldash.app"
 GUI_DOMAIN="gui/$(id -u)"
 XRUN="$HOME/dev/hl-bot/bot/scripts/hlbot-xbar-run.sh"
 DB_FILE="$HOME/dev/hl-bot/bot/data.db"
 MODE_FILE="$HOME/.hlbot/mode"
-LOG_FILE="$HOME/.hlbot/logs/hlbot.log"
-PORT=3300
+BOT_LOG="$HOME/.hlbot/logs/hlbot.log"
+DASH_LOG="$HOME/.hlbot/logs/hldash.log"
+BOT_PORT=3300
+DASH_PORT=3400
+DASH_URL="https://trading.lan"
 
 MODE="dev"; [ -f "$MODE_FILE" ] && MODE="$(cat "$MODE_FILE" 2>/dev/null)"
 [ "$MODE" = "prod" ] && NET="MAINNET" || NET="TESTNET"
 
-# Servicio
-PID="$(launchctl print "${GUI_DOMAIN}/${LABEL}" 2>/dev/null | awk '/pid =/ && $3 ~ /^[0-9]+$/ {print $3; exit}')"
-RUNNING=false; [ -n "$PID" ] && RUNNING=true
+svc_pid() { launchctl print "${GUI_DOMAIN}/$1" 2>/dev/null | awk '/pid =/ && $3 ~ /^[0-9]+$/ {print $3; exit}'; }
+http_ok() { # $1 = url
+  local code; code="$(curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "$1" 2>/dev/null)"
+  [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -lt 500 ] 2>/dev/null
+}
 
-# Health HTTP
-HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 3 "http://localhost:${PORT}/state" 2>/dev/null)"
-HEALTHY=false; { [ "$HTTP_CODE" -ge 200 ] 2>/dev/null && [ "$HTTP_CODE" -lt 500 ] 2>/dev/null; } && HEALTHY=true
+BOT_PID="$(svc_pid "$BOT_LABEL")"
+DASH_PID="$(svc_pid "$DASH_LABEL")"
+BOT_UP=false; { [ -n "$BOT_PID" ] && http_ok "http://localhost:${BOT_PORT}/state"; } && BOT_UP=true
+DASH_UP=false; { [ -n "$DASH_PID" ] && http_ok "http://localhost:${DASH_PORT}/"; } && DASH_UP=true
 
-# Estado -> glifo + color: naranja=testnet, verde=mainnet; rojo=parado
-if $RUNNING && $HEALTHY; then
+# Glifo combinado: ambos arriba => verde(mainnet)/naranja(testnet); uno caído => ámbar aviso; ambos abajo => rojo.
+if $BOT_UP && $DASH_UP; then
   if [ "$MODE" = "prod" ]; then echo "● HL | color=#00ff00 size=13"; else echo "● HL | color=#ffaa00 size=13"; fi
-elif $RUNNING; then echo "● HL | color=#ffaa00 size=13"
-else echo "○ HL | color=#ff4444 size=13"; fi
+elif $BOT_UP || $DASH_UP; then
+  echo "◐ HL | color=#ffcc00 size=13"
+else
+  echo "○ HL | color=#ff4444 size=13"
+fi
 
 echo "---"
-echo "Estado: $($RUNNING && echo corriendo || echo parado) | color=white"
-echo "Modo: $NET | color=$([ "$MODE" = prod ] && echo '#ffaa00' || echo '#888888')"
-[ -n "$PID" ] && echo "PID: $PID | color=#888888"
-echo "Puerto: $PORT | color=#888888"
+echo "Modo: $NET | color=$([ "$MODE" = prod ] && echo '#00ff00' || echo '#ffaa00')"
+echo "Bot (API :$BOT_PORT): $($BOT_UP && echo '✓ activo' || echo '✗ caído') | color=$($BOT_UP && echo '#00ff00' || echo '#ff4444')"
+[ -n "$BOT_PID" ] && echo "  pid $BOT_PID | color=#888888"
+echo "Dashboard (:$DASH_PORT): $($DASH_UP && echo '✓ activo' || echo '✗ caído') | color=$($DASH_UP && echo '#00ff00' || echo '#ff4444')"
+[ -n "$DASH_PID" ] && echo "  pid $DASH_PID | color=#888888"
 
-# Digest en vivo (SQLite read-only): última sesión + posiciones/PnL/fees
+# Digest en vivo (SQLite read-only): última sesión + fills/PnL/fees
 if [ -f "$DB_FILE" ]; then
   echo "---"
   SID="$(sqlite3 -readonly "$DB_FILE" "SELECT id FROM sessions ORDER BY id DESC LIMIT 1;" 2>/dev/null)"
@@ -56,23 +67,23 @@ if [ -f "$DB_FILE" ]; then
   fi
 fi
 
-# Acciones (ciclo de vida)
+# Acciones (ciclo de vida) — actúan sobre AMBOS servicios a la vez
 echo "---"
-if $RUNNING; then
-  if [ "$MODE" = "dev" ]; then
-    echo "Switch to Prod (MAINNET) | bash=$XRUN param1=prod terminal=false refresh=true"
-  else
-    echo "Switch to Dev (TESTNET) | bash=$XRUN param1=dev terminal=false refresh=true"
-  fi
-  echo "Restart | bash=$XRUN param1=restart terminal=false refresh=true"
-  echo "Stop | bash=$XRUN param1=stop terminal=false refresh=true"
+if $BOT_UP || $DASH_UP; then
+  echo "Stop (bot + dashboard) | bash=$XRUN param1=stop terminal=false refresh=true"
+  echo "Restart (bot + dashboard) | bash=$XRUN param1=restart terminal=false refresh=true"
 else
-  echo "Start | bash=$XRUN param1=start terminal=false refresh=true"
+  echo "Start (bot + dashboard) | bash=$XRUN param1=start terminal=false refresh=true"
 fi
+if [ "$MODE" = "dev" ]; then
+  echo "Switch to Prod (MAINNET) | bash=$XRUN param1=prod terminal=false refresh=true"
+else
+  echo "Switch to Dev (TESTNET) | bash=$XRUN param1=dev terminal=false refresh=true"
+fi
+echo "Rebuild dashboard | bash=$XRUN param1=build terminal=false refresh=true"
 
-# Caddy + enlaces
+# Enlaces
 echo "---"
-CADDY="$(brew services info caddy 2>/dev/null | grep -q 'started' && echo '✓ Caddy' || echo '✗ Caddy')"
-echo "$CADDY | color=#888888"
-echo "Open dashboard | href=http://localhost:${PORT}"
-echo "View Logs | bash=/usr/bin/open param1=-a param2=Terminal param3=$LOG_FILE terminal=false"
+echo "Open dashboard | href=$DASH_URL"
+echo "View bot logs | bash=/usr/bin/open param1=-a param2=Terminal param3=$BOT_LOG terminal=false"
+echo "View dashboard logs | bash=/usr/bin/open param1=-a param2=Terminal param3=$DASH_LOG terminal=false"
