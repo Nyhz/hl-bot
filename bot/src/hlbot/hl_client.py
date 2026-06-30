@@ -38,18 +38,25 @@ from hyperliquid.utils import constants
 from eth_account import Account
 
 
+# Timeout (segundos) de cada llamada HTTP al SDK de HL. Acota toda llamada de red para que
+# una respuesta colgada no retenga el lock del engine indefinidamente (un kill podría esperar).
+HTTP_TIMEOUT = 10
+
+
 class HLClient:
     def __init__(self, cfg: Config):
         base = constants.TESTNET_API_URL if cfg.testnet else constants.MAINNET_API_URL
         self.cfg = cfg
         self.address = cfg.account_address
         self.info = Info(base, skip_ws=True)
+        self.info.timeout = HTTP_TIMEOUT       # el SDK usa session.post(..., timeout=self.timeout)
         meta = self.info.meta()
         self.sz_decimals = {a["name"]: a["szDecimals"] for a in meta["universe"]}
         self.exchange: Exchange | None = None
         if cfg.secret_key:
             wallet = Account.from_key(cfg.secret_key)
             self.exchange = Exchange(wallet, base, account_address=cfg.account_address)
+            self.exchange.timeout = HTTP_TIMEOUT
 
     def mid(self, coin: str) -> float:
         return float(self.info.all_mids()[coin])

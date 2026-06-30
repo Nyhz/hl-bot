@@ -17,6 +17,14 @@ def test_mid_and_meta_load_from_testnet():
     assert client.mid("ETH") > 0
 
 
+def test_http_timeout_is_set():
+    from hlbot.hl_client import HTTP_TIMEOUT
+    client = HLClient(Config.from_env())
+    assert client.info.timeout == HTTP_TIMEOUT          # toda llamada de red está acotada
+    if client.exchange is not None:
+        assert client.exchange.timeout == HTTP_TIMEOUT
+
+
 def test_user_state_returns_account():
     client = HLClient(Config.from_env())
     state = client.user_state()
