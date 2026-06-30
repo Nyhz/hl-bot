@@ -30,6 +30,13 @@ export function pnlColor(n: number): string {
   return n < 0 ? "var(--neon-red)" : "var(--neon-green)";
 }
 
+export function fmtDuration(sec: number | null): string {
+  if (sec === null || sec === undefined || Number.isNaN(sec) || sec < 0) return "—";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
 export function candleSeries(candles: Candle[]): Candle[] {
   return [...candles].sort((a, b) => a.time - b.time);
 }

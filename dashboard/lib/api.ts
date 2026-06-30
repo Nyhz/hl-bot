@@ -1,4 +1,4 @@
-import type { Candle, SessionSummary, GlobalStats, TapeEvent } from "./types";
+import type { Candle, SessionSummary, GlobalStats, SessionDetail, TapeEvent } from "./types";
 
 const BASE = () => process.env.NEXT_PUBLIC_BOT_HTTP ?? "http://localhost:3300";
 
@@ -17,7 +17,6 @@ export const api = {
   getTape: (limit = 50) => get<TapeEvent[]>(`/tape?limit=${limit}`),
   getSessions: (mode?: string) =>
     get<SessionSummary[]>(`/sessions${mode ? `?mode=${mode}` : ""}`),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  getSession: (id: number) => get<any>(`/sessions/${id}`),
+  getSession: (id: number) => get<SessionDetail>(`/sessions/${id}`),
   getStatsGlobal: () => get<GlobalStats>(`/stats/global`),
 };

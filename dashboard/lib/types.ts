@@ -37,3 +37,9 @@ export interface GlobalStatsMode {
   net_pnl: number; win_rate: number; best_session: number | null; worst_session: number | null;
 }
 export interface GlobalStats { testnet: GlobalStatsMode; mainnet: GlobalStatsMode; }
+export interface SessionDetail {
+  summary: SessionSummary;
+  trades: { coin: string; side: string; dir: string; price: number; size: number; fee: number; closed_pnl: number; ts: number }[];
+  equity_curve: { ts: number; total_pnl: number }[];
+  decisions: { ts: number; coin: string; action: string; reason: string }[];
+}
