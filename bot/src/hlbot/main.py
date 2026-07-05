@@ -27,10 +27,13 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool,
     except Exception as e:
         print(f"[account_cache] user_state error: {e}", flush=True)
         return prev
+    # Sin sesión (post kill/close/reinicio) los extras de la sesión anterior sobran,
+    # pero equity y posiciones deben seguir reflejando el exchange real.
+    in_session = engine.session_started_at is not None
     session_start_ms = int((engine.session_started_at or 0) * 1000)
-    fills = prev.get("_fills", [])
-    funding_total = prev.get("_funding", 0.0)
-    if fetch_extras:
+    fills = prev.get("_fills", []) if in_session else []
+    funding_total = prev.get("_funding", 0.0) if in_session else 0.0
+    if fetch_extras and in_session:
         try:
             all_fills = client.user_fills()
             fills = [f for f in all_fills if int(f.get("time", 0) or 0) >= session_start_ms]
@@ -42,6 +45,8 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool,
             print(f"[account_cache] extras error: {e}", flush=True)
     max_open = engine.cfg.limits.max_open_positions if engine.cfg else 0
     acc = compose_account(ch, fills, funding_total, engine.session_start_value, max_open)
+    if not in_session:
+        acc["session_pnl"] = 0.0
     acc["_fills"] = fills
     acc["_funding"] = funding_total
     return acc
@@ -115,10 +120,12 @@ def run_tick(engine, client, store, shared, cache_holder, counters):
                 counters["ticks"] += 1
                 if counters["ticks"] % PNL_SNAPSHOT_EVERY == 0 and engine.session_id is not None:
                     store.record_pnl_snapshot(engine.session_id, engine._account_value())
-            if engine.cfg is not None:
-                cache_holder["v"] = refresh_account_cache(
-                    client, engine, cache_holder["v"],
-                    fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
+            # Refresco SIEMPRE (haya o no sesión): si solo se refrescara con cfg,
+            # tras kill/close la caché quedaría congelada con las posiciones viejas
+            # y el dashboard las pintaría como abiertas indefinidamente.
+            cache_holder["v"] = refresh_account_cache(
+                client, engine, cache_holder["v"],
+                fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
         except Exception as e:  # red caída, BD, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)
 

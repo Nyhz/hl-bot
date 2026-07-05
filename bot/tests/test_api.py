@@ -72,11 +72,27 @@ def test_kill_requires_confirm_flag():
                     headers={"X-Control-Token": TOKEN})
     assert r.status_code == 400
 
-def test_close_from_idle_is_ok():
+def test_close_from_idle_is_409():
+    # el 200 silencioso en IDLE ocultaba que el cierre no hacía nada (post-reinicio)
     client, engine = _client()
     r = client.post("/session/close", headers={"X-Control-Token": TOKEN})
-    assert r.status_code == 200
-    assert r.json()["state"] == "idle"
+    assert r.status_code == 409
+
+
+def test_kill_failure_returns_502_with_detail():
+    client, engine = _client()
+    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
+            "limits": {"max_position_notional": 10.0, "max_open_positions": 4,
+                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
+                       "total_loss_limit": 20.0}}
+    client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    # posición que market_close (fake) no elimina -> kill debe fallar, no fingir éxito
+    engine.client.positions = [{"position": {"coin": "ETH", "szi": "0.01",
+                                             "positionValue": "30"}}]
+    r = client.post("/session/kill", json={"confirm": True},
+                    headers={"X-Control-Token": TOKEN})
+    assert r.status_code == 502
+    assert "ETH" in r.json()["detail"]
 
 def test_close_requires_token():
     client, _ = _client()

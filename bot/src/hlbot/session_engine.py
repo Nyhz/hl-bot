@@ -8,6 +8,7 @@ from hlbot.strategy.grid import GridStrategy
 from hlbot.strategy.trend import TrendOverlayStrategy
 from hlbot.risk import RiskManager
 from hlbot.indicators import atr
+from hlbot.hl_client import order_response_error
 
 
 class SessionEngine:
@@ -74,19 +75,58 @@ class SessionEngine:
         self.state = SessionState.SCANNING
 
     def close(self) -> None:
-        if self.state in (SessionState.SCANNING, SessionState.ACTIVE):
-            self.state = SessionState.CLOSING
-            if self.cfg:
-                for coin in self.cfg.watchlist:
+        if self.state not in (SessionState.SCANNING, SessionState.ACTIVE):
+            raise RuntimeError(
+                f"no hay sesion activa que cerrar (estado {self.state.value})")
+        self.state = SessionState.CLOSING
+        if self.cfg:
+            for coin in self.cfg.watchlist:
+                try:
                     self.client.cancel_all(coin)
+                except Exception as e:
+                    self.store.record_risk_event(
+                        self.session_id, "close_error", f"cancel_all {coin}: {e}")
 
     def kill(self, confirm: bool) -> None:
         if not confirm:
             raise ValueError("kill requiere confirmacion explicita")
-        if self.cfg:
-            for coin in self.cfg.watchlist:
+        errors: list[str] = []
+        try:
+            positions = self.client.user_state().get("assetPositions", [])
+        except Exception as e:
+            positions = []
+            errors.append(f"user_state: {e}")
+        pos_coins = {(p.get("position", {}) or {}).get("coin") for p in positions}
+        pos_coins.discard(None)
+        # watchlist ∪ posiciones reales: cubre huérfanas post-reinicio (cfg perdida)
+        # y fills recientes aún no visibles en user_state.
+        coins = sorted(pos_coins | set(self.cfg.watchlist if self.cfg else []))
+        for coin in coins:
+            try:
                 self.client.cancel_all(coin)
-                self.client.market_close(coin)
+            except Exception as e:
+                errors.append(f"cancel_all {coin}: {e}")
+            try:
+                err = order_response_error(self.client.market_close(coin))
+            except Exception as e:
+                err = str(e)
+            if err and coin in pos_coins:
+                errors.append(f"market_close {coin}: {err}")
+        # Verificación final contra el exchange: kill solo "triunfa" si quedamos planos.
+        try:
+            remaining = sorted({c for c in ((p.get("position", {}) or {}).get("coin")
+                                for p in self.client.user_state().get("assetPositions", []))
+                                if c})
+        except Exception as e:
+            remaining = None
+            errors.append(f"verificacion final: {e}")
+        if remaining:
+            errors.append(f"posiciones aun abiertas: {', '.join(remaining)}")
+        if self.session_id is not None:
+            for msg in errors:
+                self.store.record_risk_event(self.session_id, "kill_error", msg)
+        if remaining != []:
+            raise RuntimeError("kill incompleto: " + "; ".join(errors))
         if self.session_id is not None:
             self.store.end_session(self.session_id)
         self._reset()
@@ -227,8 +267,30 @@ class SessionEngine:
                     continue
                 self._apply(coin, ms, d, n_open, equity, gross,
                             pos_notionals.get(coin, 0.0))
-        if self.state == SessionState.CLOSING and n_open == 0:
-            self._reset()
+        if self.state == SessionState.CLOSING:
+            if n_open == 0:
+                if self.session_id is not None:
+                    self.store.end_session(self.session_id)
+                self._reset()
+            else:
+                self._force_close_positions(asset_positions)
+
+    def _force_close_positions(self, asset_positions: list) -> None:
+        # Cierre ACTIVO: el grid no tiene salida propia (solo coloca rungs), así que
+        # en CLOSING no se puede esperar a que la posición "salga sola". Se liquida a
+        # mercado verificando la respuesta y se reintenta cada tick hasta quedar plano.
+        for p in asset_positions:
+            coin = (p.get("position", {}) or {}).get("coin")
+            if not coin:
+                continue
+            try:
+                self.client.cancel_all(coin)
+                err = order_response_error(self.client.market_close(coin))
+            except Exception as e:
+                err = str(e)
+            if err:
+                self.store.record_risk_event(
+                    self.session_id, "close_error", f"{coin}: {err}")
 
     def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
         try:
@@ -257,7 +319,13 @@ class SessionEngine:
     def _apply(self, coin: str, ms: MarketState, d, n_open: int,
                equity: float, gross: float, coin_notional: float) -> None:
         if d.action == ActionType.PLACE_LIMIT:
-            if not d.reduce_only:
+            # Un rung del lado contrario que no supera el inventario REDUCE la posición:
+            # no debe pasar por can_open/max_coin_notional (bloquearlo congela la
+            # posición en el cap sin vía de salida).
+            reduces = ((d.side == Side.SELL and ms.inventory > 1e-12)
+                       or (d.side == Side.BUY and ms.inventory < -1e-12))
+            shrinks = reduces and (d.size or 0) <= abs(ms.inventory) + 1e-12
+            if not d.reduce_only and not shrinks:
                 notional = (d.price or 0) * (d.size or 0)
                 if not self._risk_ok(notional, n_open, equity, gross, coin_notional):
                     return

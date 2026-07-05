@@ -33,3 +33,30 @@ def test_stop_order_type_is_market_sl():
     assert ot["trigger"]["isMarket"] is True
     assert ot["trigger"]["tpsl"] == "sl"
     assert ot["trigger"]["triggerPx"] == 2940.0
+
+
+def test_order_response_error_detects_status_error():
+    from hlbot.hl_client import order_response_error
+    resp = {"status": "ok", "response": {"data": {"statuses": [
+        {"error": "Order could not immediately match against any resting orders"}]}}}
+    err = order_response_error(resp)
+    assert err is not None and "match" in err
+
+
+def test_order_response_error_none_response_is_error():
+    # market_close del SDK devuelve None si no ve la posición: no es un éxito
+    from hlbot.hl_client import order_response_error
+    assert order_response_error(None) is not None
+
+
+def test_order_response_error_accepts_ok_responses():
+    from hlbot.hl_client import order_response_error
+    filled = {"status": "ok", "response": {"data": {"statuses": [
+        {"filled": {"totalSz": "0.01", "avgPx": "3000", "oid": 7}}]}}}
+    assert order_response_error(filled) is None
+    assert order_response_error({"status": "ok"}) is None   # respuestas mínimas (fakes)
+
+
+def test_order_response_error_err_status():
+    from hlbot.hl_client import order_response_error
+    assert order_response_error({"status": "err", "response": "rate limited"}) is not None

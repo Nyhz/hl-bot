@@ -32,6 +32,26 @@ def stop_order_type(trigger_px: float) -> dict:
     return {"trigger": {"isMarket": True, "triggerPx": trigger_px, "tpsl": "sl"}}
 
 
+def order_response_error(resp) -> str | None:
+    """Devuelve el error de una respuesta de orden del SDK, o None si fue bien.
+
+    El SDK devuelve los rechazos como statuses con 'error' SIN lanzar excepción
+    (p. ej. un IOC que no cruza en un libro ilíquido); y market_close devuelve
+    None si no ve la posición. Tratar ambos como éxito deja posiciones abiertas.
+    """
+    if resp is None:
+        return "sin respuesta (el SDK no vio posicion que cerrar)"
+    if not isinstance(resp, dict):
+        return None
+    if resp.get("status") not in (None, "ok"):
+        return str(resp.get("response") or resp)
+    data = (resp.get("response") or {}).get("data") or {}
+    for st in data.get("statuses") or []:
+        if isinstance(st, dict) and st.get("error"):
+            return str(st["error"])
+    return None
+
+
 from hyperliquid.info import Info
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants

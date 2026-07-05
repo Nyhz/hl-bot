@@ -42,11 +42,12 @@ class FakeClient:
     def open_orders(self, coin): return list(self.resting)
 
 class FakeStore:
-    def __init__(self): self.decisions = []; self.sid = 1
+    def __init__(self):
+        self.decisions = []; self.sid = 1; self.ended = []; self.risk_events = []
     def create_session(self, watchlist, capital, mode="testnet"): return self.sid
-    def end_session(self, sid): pass
+    def end_session(self, sid): self.ended.append(sid)
     def record_decision(self, sid, coin, action, reason): self.decisions.append((coin, action, reason))
-    def record_risk_event(self, sid, kind, detail): pass
+    def record_risk_event(self, sid, kind, detail): self.risk_events.append((kind, detail))
     def record_pnl_snapshot(self, sid, pnl): pass
 
 def _cfg():
@@ -480,6 +481,144 @@ def test_decisions_flat_trending_enters_trend():
     ms = MarketState(coin="ETH", mid=3000.0, candles=[], inventory=0.0)  # plano
     ds = eng._decisions_for(ms)
     assert any(d.action == ActionType.PLACE_MARKET for d in ds)  # momentum entra
+
+
+def test_close_raises_without_active_session():
+    # tras un reinicio del proceso (estado IDLE) el botón de cerrar debe dar error
+    # explícito, no un 200 silencioso que no hace nada
+    eng = SessionEngine(FakeClient(), FakeStore())
+    with pytest.raises(RuntimeError):
+        eng.close()
+
+
+def test_closing_actively_closes_positions_each_tick():
+    # el grid no tiene salida propia: en CLOSING el engine debe liquidar a mercado
+    # y reintentar cada tick hasta quedar plano (bug de la sesión de 90h)
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.close()
+    eng.tick(_flat_ms())
+    assert client.closed == ["ETH"]                   # liquidó a mercado
+    assert eng.state == SessionState.CLOSING          # posición aún visible -> sigue cerrando
+    eng.tick(_flat_ms())
+    assert client.closed == ["ETH", "ETH"]            # reintenta en el siguiente tick
+
+
+def test_closing_ends_session_in_store_when_flat():
+    store = FakeStore()
+    eng = SessionEngine(FakeClient(), store)
+    eng.launch(_cfg())
+    eng.close()
+    eng.tick(_flat_ms())                              # sin posiciones -> termina
+    assert eng.state == SessionState.IDLE
+    assert store.ended == [1]                         # ended_at grabado en BD
+
+
+def test_closing_records_error_when_market_close_rejected():
+    # el SDK devuelve rechazos como statuses con 'error' SIN excepción: hay que
+    # detectarlos y dejar rastro, no darlos por buenos
+    class _RejClient(FakeClient):
+        def market_close(self, coin):
+            super().market_close(coin)
+            return {"status": "ok", "response": {"data": {"statuses": [
+                {"error": "Order could not immediately match"}]}}}
+    client = _RejClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    eng.close()
+    eng.tick(_flat_ms())
+    assert any(k == "close_error" for k, _ in store.risk_events)
+    assert eng.state == SessionState.CLOSING
+
+
+def test_kill_raises_when_positions_remain():
+    # kill no debe fingir éxito: si tras cerrar sigue habiendo posiciones,
+    # error explícito y la sesión queda viva para reintentar
+    client = FakeClient()                              # market_close no vacía positions
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    with pytest.raises(RuntimeError):
+        eng.kill(confirm=True)
+    assert eng.session_id == 1                         # sesión NO finiquitada en falso
+    assert store.ended == []
+    assert any(k == "kill_error" for k, _ in store.risk_events)
+
+
+def test_kill_success_when_positions_clear():
+    class _OkClient(FakeClient):
+        def market_close(self, coin):
+            r = super().market_close(coin)
+            self.positions = [p for p in self.positions
+                              if p["position"]["coin"] != coin]
+            return r
+    client = _OkClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    eng.kill(confirm=True)
+    assert eng.state == SessionState.IDLE
+    assert store.ended == [1]
+
+
+def test_kill_closes_orphan_positions_without_session():
+    # tras un reinicio: cfg=None pero hay posiciones reales en el exchange;
+    # kill debe operar sobre user_state, no sobre la watchlist perdida
+    class _OkClient(FakeClient):
+        def market_close(self, coin):
+            r = super().market_close(coin)
+            self.positions = [p for p in self.positions
+                              if p["position"]["coin"] != coin]
+            return r
+    client = _OkClient()
+    client.positions = [{"position": {"coin": "BTC", "szi": "-0.001", "positionValue": "50"}}]
+    eng = SessionEngine(client, FakeStore())           # sin launch
+    eng.kill(confirm=True)
+    assert "BTC" in client.closed
+    assert "BTC" in client.canceled
+    assert eng.state == SessionState.IDLE
+
+
+def test_grid_exit_rung_allowed_at_coin_cap():
+    # largo en el cap por moneda: el rung SELL que REDUCE inventario no debe ser
+    # rechazado por max_coin_notional (origen de la posición congelada + 37k rechazos)
+    from hlbot.models import Decision, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0, 30.0)     # cap por moneda ya alcanzado
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(cfg)
+
+    class _Grid:
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.PLACE_LIMIT, side=Side.SELL,
+                             price=3010.0, size=0.005, reason="rung de salida")]
+        def half_spread(self, ms, sigma): return 1.0
+        def _sigma(self, ms): return 1.0
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+
+    class _NoTrend:
+        def is_trending(self, ms): return False
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+
+    eng.grids["ETH"] = _Grid()
+    eng.trends["ETH"] = _NoTrend()
+    eng.tick(_flat_ms())
+    sells = [o for o in client.orders if o[1] is False]    # is_buy=False
+    assert sells                                           # el rung reductor se colocó
 
 
 def test_engine_has_lock_and_is_free():

@@ -75,6 +75,32 @@ def test_run_tick_executes_under_lock_and_releases():
     eng.lock.release()
 
 
+def test_run_tick_refreshes_cache_without_session():
+    # tras kill/close (cfg=None) la caché debe seguir reflejando la cuenta real,
+    # no quedarse congelada con las posiciones de antes del cierre (gráficos "abiertos")
+    from hlbot.main import run_tick
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    eng = SessionEngine(FakeClient(), FakeStore())     # sin sesión (cfg None)
+    stale = {"positions": [{"coin": "ETH"}], "open_count": 1}
+    cache = {"v": stale}
+    run_tick(eng, eng.client, eng.store, {}, cache, {"loop": 0, "ticks": 0})
+    assert cache["v"]["positions"] == []               # refrescada desde user_state real
+    assert cache["v"]["open_count"] == 0
+
+
+def test_refresh_account_cache_clears_session_data_without_session():
+    class _EngNone:
+        session_start_value = 0.0
+        session_started_at = None
+        session_id = None
+        cfg = None
+    prev = {"_fills": [{"coin": "BTC"}], "_funding": 1.23}
+    cache = refresh_account_cache(_AcctClient(), _EngNone(), prev, fetch_extras=True)
+    assert cache["_fills"] == []                       # fills de la sesión anterior fuera
+    assert cache["session_pnl"] == 0.0                 # sin sesión no hay pnl de sesión
+
+
 def test_refresh_records_fills_dedup(tmp_path):
     store = Store(str(tmp_path / "t.db")); store.init_schema()
     sid = store.create_session(["BTC"], 40.0, mode="testnet")

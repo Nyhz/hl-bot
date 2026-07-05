@@ -131,6 +131,9 @@ def create_app(engine: SessionEngine, control_token: str,
                 engine.kill(confirm=body.confirm)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            # kill incompleto (quedan posiciones): error visible, sesión sigue viva
+            raise HTTPException(status_code=502, detail=str(e))
         return {"state": engine.state.value}
 
     @app.post("/limits")
