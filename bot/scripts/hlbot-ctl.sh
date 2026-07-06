@@ -52,7 +52,13 @@ install_all() {
   echo "instalados ${BOT_LABEL} + ${DASH_LABEL}"
 }
 
-start_all()   { for L in "$BOT_LABEL" "$DASH_LABEL"; do launchctl kickstart -k "${GUI_DOMAIN}/${L}" 2>/dev/null || true; done; }
+is_loaded()   { launchctl print "${GUI_DOMAIN}/$1" >/dev/null 2>&1; }
+# kickstart solo funciona si el servicio ya está bootstrapeado. Tras un 'stop' (bootout)
+# o un reinicio sin recarga, hay que reinstalarlo primero o Start es un no-op silencioso.
+ensure_loaded() { if ! is_loaded "$BOT_LABEL" || ! is_loaded "$DASH_LABEL"; then install_all; fi; }
+kick()        { launchctl kickstart -k "${GUI_DOMAIN}/$1" 2>/dev/null || true; }
+
+start_all()   { ensure_loaded; for L in "$BOT_LABEL" "$DASH_LABEL"; do kick "$L"; done; }
 stop_all()    { for L in "$BOT_LABEL" "$DASH_LABEL"; do launchctl bootout "${GUI_DOMAIN}/${L}" 2>/dev/null || true; done; }
 restart_all() { start_all; }
 
@@ -61,9 +67,9 @@ case "${1:-}" in
   stop)    stop_all ;;
   restart) restart_all ;;
   # dev/prod = testnet/mainnet del bot; el dashboard es agnóstico (lo refleja solo).
-  dev)     echo "dev"  > "$MODE_FILE"; launchctl kickstart -k "${GUI_DOMAIN}/${BOT_LABEL}" 2>/dev/null || true ;;
-  prod)    echo "prod" > "$MODE_FILE"; launchctl kickstart -k "${GUI_DOMAIN}/${BOT_LABEL}" 2>/dev/null || true ;;
-  build)   build_dashboard; launchctl kickstart -k "${GUI_DOMAIN}/${DASH_LABEL}" 2>/dev/null || true ;;
+  dev)     echo "dev"  > "$MODE_FILE"; ensure_loaded; kick "$BOT_LABEL" ;;
+  prod)    echo "prod" > "$MODE_FILE"; ensure_loaded; kick "$BOT_LABEL" ;;
+  build)   build_dashboard; ensure_loaded; kick "$DASH_LABEL" ;;
   install) install_all ;;
   *) echo "uso: $0 {start|stop|restart|dev|prod|build|install}" >&2; exit 2 ;;
 esac
