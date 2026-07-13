@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS market_candles (
     open REAL, high REAL, low REAL, close REAL, volume REAL,
     PRIMARY KEY (coin, interval, t)
 );
+CREATE TABLE IF NOT EXISTS session_runtime (
+    session_id INTEGER PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS risk_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
@@ -217,6 +222,29 @@ class Store:
                 "(session_id, fkey, ts, coin, amount) VALUES (?, ?, ?, ?, ?)",
                 (session_id, fkey, ts, coin, amount),
             )
+
+    def save_runtime(self, session_id: int, payload: str) -> None:
+        # Snapshot del estado vivo del engine (1 fila por sesión, upsert por tick):
+        # lo que permite rehidratar la sesión tras un reinicio del proceso.
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO session_runtime (session_id, updated_at, payload) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "updated_at=excluded.updated_at, payload=excluded.payload",
+                (session_id, int(time.time()), payload),
+            )
+
+    def open_sessions(self, mode: str) -> list[dict]:
+        # Sesiones sin cerrar del MODO actual (nunca rehidratar testnet en mainnet
+        # ni viceversa), la más reciente primero, con su runtime si existe.
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT s.*, r.payload FROM sessions s "
+                "LEFT JOIN session_runtime r ON r.session_id = s.id "
+                "WHERE s.ended_at IS NULL AND s.mode = ? ORDER BY s.id DESC",
+                (mode,)).fetchall()
+            return [dict(r) for r in rows]
 
     def get_funding(self, session_id: int) -> list[dict]:
         with self._conn() as conn:

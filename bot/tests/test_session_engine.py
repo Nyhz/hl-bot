@@ -17,6 +17,8 @@ class FakeClient:
         self.positions = []
         self.leverage_set = []
         self.market_opens = []
+        self.scheduled_cancels = []
+        self.frontend_orders = []
         self._next_oid = 1000
     def mid(self, coin): return self._mid[coin]
     def set_leverage(self, coin, leverage, is_cross=False):
@@ -40,15 +42,21 @@ class FakeClient:
     def market_close(self, coin): self.closed.append(coin); return {"status": "ok"}
     def cancel_all(self, coin): self.canceled.append(coin)
     def open_orders(self, coin): return list(self.resting)
+    def schedule_cancel(self, at_ms):
+        self.scheduled_cancels.append(at_ms); return {"status": "ok"}
+    def all_open_orders(self): return list(self.resting)
+    def frontend_open_orders(self): return list(self.frontend_orders)
 
 class FakeStore:
     def __init__(self):
         self.decisions = []; self.sid = 1; self.ended = []; self.risk_events = []
+        self.runtime = None
     def create_session(self, watchlist, capital, mode="testnet"): return self.sid
     def end_session(self, sid): self.ended.append(sid)
     def record_decision(self, sid, coin, action, reason): self.decisions.append((coin, action, reason))
     def record_risk_event(self, sid, kind, detail): self.risk_events.append((kind, detail))
     def record_pnl_snapshot(self, sid, pnl): pass
+    def save_runtime(self, sid, payload): self.runtime = payload
 
 def _cfg():
     limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
@@ -619,6 +627,186 @@ def test_grid_exit_rung_allowed_at_coin_cap():
     eng.tick(_flat_ms())
     sells = [o for o in client.orders if o[1] is False]    # is_buy=False
     assert sells                                           # el rung reductor se colocó
+
+
+def test_trend_entry_rejected_not_marked_open():
+    # rechazo SIN excepción (p.ej. margen insuficiente): el coin NO debe entrar en
+    # trend_open sin posición real (quedaría atascado toda la sesión: bloqueado para
+    # el grid y sin reintento de entrada) ni colocarse un stop huérfano
+    from hlbot.models import Decision, Side
+
+    class _RejOpen(FakeClient):
+        def market_open(self, coin, is_buy, size, slippage=0.01):
+            super().market_open(coin, is_buy, size)
+            return {"status": "ok", "response": {"data": {"statuses": [
+                {"error": "Insufficient margin to place order"}]}}}
+
+    client = _RejOpen()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+
+    class _Trend:
+        def is_trending(self, ms): return True
+        def evaluate(self, ms):
+            return [
+                Decision("ETH", ActionType.PLACE_MARKET, side=Side.BUY,
+                         size=0.003, reason="t"),
+                Decision("ETH", ActionType.SET_STOP, side=Side.SELL, price=2940.0,
+                         size=0.003, reduce_only=True, reason="stop inicial"),
+            ]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())
+    assert "ETH" not in eng.trend_open                     # no finge posición
+    assert client.stops == []                              # sin posición no hay stop
+    assert any(k == "orden_rechazada" for k, _ in store.risk_events)
+    eng.tick(_flat_ms())
+    assert len(client.market_opens) == 2                   # puede reintentar la entrada
+
+
+def test_trend_close_rejected_records_event():
+    # la salida por reversión también llega como statuses con 'error' sin excepción:
+    # hay que dejar rastro (la posición sigue viva y se reintenta al tick siguiente)
+    from hlbot.models import Decision
+
+    class _RejClose(FakeClient):
+        def market_close(self, coin):
+            super().market_close(coin)
+            return {"status": "ok", "response": {"data": {"statuses": [
+                {"error": "Order could not immediately match"}]}}}
+
+    client = _RejClose()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.003", "positionValue": "10"}}]
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    eng.trend_open.add("ETH")
+    eng.trend_confirmed.add("ETH")
+
+    class _Trend:
+        def is_trending(self, ms): return False
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.CLOSE, reduce_only=True, reason="reversión")]
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    eng.trends["ETH"] = _Trend()
+
+    eng.tick(_flat_ms())
+    assert any(k == "close_error" for k, _ in store.risk_events)
+    assert "ETH" in eng.trend_open                         # sigue gestionada por momentum
+
+
+def test_launch_and_tick_persist_runtime():
+    import json
+    store = FakeStore()
+    eng = SessionEngine(FakeClient(), store)
+    eng.launch(_cfg())
+    assert store.runtime is not None                       # snapshot al lanzar
+    p = json.loads(store.runtime)
+    assert p["cfg"]["watchlist"] == ["ETH"]
+    assert p["cfg"]["limits"]["daily_loss_limit"] == 5.0   # limits COMPLETOS persistidos
+    store.runtime = None
+    eng.tick(_flat_ms())
+    assert store.runtime is not None                       # y en cada tick
+
+
+def test_rehydrate_restores_session_from_payload():
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.004", "positionValue": "12"}}]
+    src = SessionEngine(client, FakeStore())
+    src.launch(_cfg())
+    src.trend_open.add("ETH"); src.trend_confirmed.add("ETH")
+    src.stop_levels["ETH"] = 2940.0; src.stop_oids["ETH"] = 777
+    src.state = SessionState.ACTIVE
+    payload = src.runtime_payload()
+
+    client2 = FakeClient()
+    client2.positions = list(client.positions)
+    client2.frontend_orders = [{"coin": "ETH", "oid": 777}]   # el stop sigue vivo
+    eng = SessionEngine(client2, FakeStore())
+    eng.rehydrate(1, 1234, payload)
+    assert eng.state == SessionState.ACTIVE
+    assert eng.session_id == 1 and eng.session_started_at == 1234
+    assert eng.cfg.watchlist == ["ETH"] and eng.risk is not None
+    assert eng.cfg.limits.daily_loss_limit == 5.0
+    assert eng.trend_open == {"ETH"} and eng.trend_confirmed == {"ETH"}
+    assert eng.stop_oids == {"ETH": 777} and eng.stop_levels == {"ETH": 2940.0}
+    assert "ETH" in eng.grids and "ETH" in eng.trends      # estrategias reconstruidas
+    assert eng.session_start_value == src.session_start_value
+
+
+def test_rehydrate_drops_trend_position_closed_while_dead():
+    # el stop ejecutó con el bot muerto: la posición ya no está -> fuera de
+    # trend_open y su trigger residual cancelado
+    client = FakeClient()
+    src = SessionEngine(client, FakeStore())
+    src.launch(_cfg())
+    src.trend_open.add("ETH"); src.trend_confirmed.add("ETH")
+    src.stop_levels["ETH"] = 2940.0; src.stop_oids["ETH"] = 777
+    payload = src.runtime_payload()
+
+    client2 = FakeClient()                                 # sin posiciones
+    eng = SessionEngine(client2, FakeStore())
+    eng.rehydrate(1, 1234, payload)
+    assert eng.trend_open == set() and eng.trend_confirmed == set()
+    assert eng.stop_oids == {} and eng.stop_levels == {}
+    assert ("ETH", 777) in client2.canceled_oids           # trigger residual cancelado
+
+
+def test_rehydrate_forgets_stop_missing_on_exchange():
+    # el trigger desapareció (kill parcial, cancelación manual): olvidarlo para
+    # que el engine recoloque el stop al siguiente tick, no crea que sigue puesto
+    client = FakeClient()
+    src = SessionEngine(client, FakeStore())
+    src.launch(_cfg())
+    src.trend_open.add("ETH")
+    src.stop_levels["ETH"] = 2940.0; src.stop_oids["ETH"] = 777
+    payload = src.runtime_payload()
+
+    client2 = FakeClient()
+    client2.positions = [{"position": {"coin": "ETH", "szi": "0.004", "positionValue": "12"}}]
+    client2.frontend_orders = []                           # el stop YA NO existe
+    eng = SessionEngine(client2, FakeStore())
+    eng.rehydrate(1, 1234, payload)
+    assert eng.trend_open == {"ETH"}                       # la posición sí sigue
+    assert eng.stop_oids == {} and eng.stop_levels == {}   # stop olvidado -> se recoloca
+
+
+def test_rehydrate_resumes_closing():
+    # un Close en curso sobrevive al reinicio: sigue liquidando hasta quedar plano
+    client = FakeClient()
+    src = SessionEngine(client, FakeStore())
+    src.launch(_cfg())
+    src.state = SessionState.CLOSING
+    payload = src.runtime_payload()
+
+    client2 = FakeClient()
+    client2.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    eng = SessionEngine(client2, FakeStore())
+    eng.rehydrate(1, 1234, payload)
+    assert eng.state == SessionState.CLOSING
+    eng.tick(_flat_ms())
+    assert client2.closed == ["ETH"]                       # retoma el cierre activo
+
+
+def test_rehydrate_keeps_loss_limit_continuity():
+    # session_start_value original restaurado: si el límite se cruzó con el bot
+    # muerto, el primer tick dispara el auto-close
+    client = FakeClient()
+    src = SessionEngine(client, FakeStore())
+    src.launch(_cfg())                                     # start_value = 40
+    payload = src.runtime_payload()
+
+    client2 = FakeClient()
+    client2.account_value = "34"                           # -6 <= -5 (daily limit)
+    client2.positions = [{"position": {"coin": "ETH", "szi": "0.01", "positionValue": "30"}}]
+    eng = SessionEngine(client2, FakeStore())
+    eng.rehydrate(1, 1234, payload)
+    eng.tick(_flat_ms())
+    assert eng.paused is True and eng.state == SessionState.CLOSING
 
 
 def test_engine_has_lock_and_is_free():

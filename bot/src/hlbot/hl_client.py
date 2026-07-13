@@ -148,6 +148,14 @@ class HLClient:
             if o["coin"] == coin:
                 self.exchange.cancel(coin, o["oid"])
 
+    def schedule_cancel(self, at_ms: int | None) -> dict:
+        # Dead man's switch del exchange: al llegar at_ms HL cancela TODO el reposo de la
+        # cuenta (None lo desarma). El runner lo re-arma periódicamente; si el proceso
+        # muere o se congela, la escalera del grid deja de llenarse sola sin nadie al mando.
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        return self.exchange.schedule_cancel(at_ms)
+
     def cancel_order(self, coin: str, oid: int) -> None:
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
@@ -155,6 +163,14 @@ class HLClient:
 
     def open_orders(self, coin: str) -> list[dict]:
         return [o for o in self.info.open_orders(self.address) if o.get("coin") == coin]
+
+    def all_open_orders(self) -> list[dict]:
+        # Reposo de TODAS las monedas (limpieza de huérfanas al arrancar).
+        return self.info.open_orders(self.address)
+
+    def frontend_open_orders(self) -> list[dict]:
+        # Incluye órdenes trigger (stops), que NO aparecen en open_orders básico.
+        return self.info.frontend_open_orders(self.address)
 
     def place_stop(self, coin: str, is_buy: bool, trigger_px: float, size: float,
                    reduce_only: bool = True, slippage: float = 0.005) -> dict:

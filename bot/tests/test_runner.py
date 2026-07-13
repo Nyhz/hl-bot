@@ -101,6 +101,89 @@ def test_refresh_account_cache_clears_session_data_without_session():
     assert cache["session_pnl"] == 0.0                 # sin sesión no hay pnl de sesión
 
 
+def test_dms_armed_and_rearmed_with_session():
+    # con sesión activa el runner arma el dead man's switch del exchange y lo
+    # re-arma por cadencia: si el proceso muere, HL cancela solo todo el reposo
+    import time
+    from hlbot.main import run_tick, DMS_EVERY_TICKS
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_run_cfg())
+    counters = {"loop": 0, "ticks": 0}
+    run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)
+    assert len(eng.client.scheduled_cancels) == 1
+    assert eng.client.scheduled_cancels[0] > int(time.time() * 1000)  # cancel-all diferido
+    for _ in range(DMS_EVERY_TICKS):
+        run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)
+    assert len(eng.client.scheduled_cancels) == 2   # re-armado una vez por cadencia
+
+
+def test_dms_disarmed_when_session_ends():
+    from hlbot.main import run_tick
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_run_cfg())
+    counters = {"loop": 0, "ticks": 0}
+    run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)      # arma
+    eng._reset()                                                       # sesión terminada
+    run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)      # desarma
+    assert eng.client.scheduled_cancels[-1] is None
+    run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)      # ya desarmado: no repite
+    assert eng.client.scheduled_cancels.count(None) == 1
+
+
+def test_dms_expired_clears_stop_tracking():
+    # tick congelado > horizonte: el exchange ya disparó el cancel-all (stops de
+    # tendencia incluidos); el runner debe olvidarlos para que el engine los
+    # recoloque, no creer que siguen puestos con la posición desnuda
+    from hlbot.main import run_tick
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_run_cfg())
+    eng.stop_levels["ETH"] = 2900.0
+    eng.stop_oids["ETH"] = 111
+    counters = {"loop": 0, "ticks": 0, "dms_armed": True, "dms_last_arm_ms": 1}
+    run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)
+    assert eng.stop_levels == {} and eng.stop_oids == {}
+    assert eng.client.scheduled_cancels                    # y re-armó inmediatamente
+
+
+def test_dms_volume_gated_disables_after_first_rejection():
+    # HL gatea scheduleCancel a $1M de volumen acumulado y responde status=err SIN
+    # excepción: hay que desactivarlo (protege el watchdog), no reintentarlo cada tick
+    from hlbot.main import run_tick
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+
+    class _Gated(FakeClient):
+        def schedule_cancel(self, at_ms):
+            super().schedule_cancel(at_ms)
+            return {"status": "err",
+                    "response": "Cannot set scheduled cancel time until enough volume traded."}
+
+    eng = SessionEngine(_Gated(), FakeStore())
+    eng.launch(_run_cfg())
+    counters = {"loop": 0, "ticks": 0}
+    for _ in range(3):
+        run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters)
+    assert len(eng.client.scheduled_cancels) == 1      # un intento y desactivado
+    assert not counters.get("dms_armed")
+    assert counters.get("dms_unavailable") is True
+
+
+def test_run_tick_writes_heartbeat(tmp_path, monkeypatch):
+    import hlbot.main as m
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    monkeypatch.setattr(m, "HEARTBEAT_FILE", str(tmp_path / "hb"))
+    eng = SessionEngine(FakeClient(), FakeStore())
+    m.run_tick(eng, eng.client, eng.store, {}, {"v": {}}, {"loop": 0, "ticks": 0})
+    assert float((tmp_path / "hb").read_text()) > 0    # latido para el watchdog
+
+
 def test_refresh_records_fills_dedup(tmp_path):
     store = Store(str(tmp_path / "t.db")); store.init_schema()
     sid = store.create_session(["BTC"], 40.0, mode="testnet")

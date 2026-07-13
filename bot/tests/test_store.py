@@ -136,3 +136,32 @@ def test_record_funding_unique_dedups(tmp_path):
         store.record_funding_unique(sid, "fk1", 100, "ETH", -0.001)
     f = store.get_funding(sid)
     assert len(f) == 1 and f[0]["amount"] == -0.001
+
+
+def test_save_runtime_upserts_single_row(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0, mode="testnet")
+    store.save_runtime(sid, '{"v": 1}')
+    store.save_runtime(sid, '{"v": 2}')                    # upsert, no acumula filas
+    rows = store.open_sessions("testnet")
+    assert len(rows) == 1
+    assert rows[0]["payload"] == '{"v": 2}'
+
+
+def test_open_sessions_filters_mode_and_ended(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    s_test = store.create_session(["ETH"], 40.0, mode="testnet")
+    s_main = store.create_session(["BTC"], 40.0, mode="mainnet")
+    s_done = store.create_session(["SOL"], 40.0, mode="testnet")
+    store.end_session(s_done)
+    rows = store.open_sessions("testnet")
+    assert [r["id"] for r in rows] == [s_test]             # ni mainnet ni acabadas
+    assert rows[0]["payload"] is None                      # sin runtime guardado
+
+
+def test_open_sessions_newest_first(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    old = store.create_session(["ETH"], 40.0, mode="testnet")
+    new = store.create_session(["ETH"], 40.0, mode="testnet")
+    rows = store.open_sessions("testnet")
+    assert [r["id"] for r in rows] == [new, old]

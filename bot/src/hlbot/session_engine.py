@@ -1,8 +1,11 @@
 from __future__ import annotations
+import json
 import threading
 import time
+from datetime import date
 from hlbot.models import (
     MarketState, SessionState, SessionConfig, ActionType, Side, to_dict,
+    session_config_from_dict,
 )
 from hlbot.strategy.grid import GridStrategy
 from hlbot.strategy.trend import TrendOverlayStrategy
@@ -73,6 +76,107 @@ class SessionEngine:
         self.trend_regime = set()
         self.paused = False
         self.state = SessionState.SCANNING
+        self._save_runtime()
+
+    def runtime_payload(self) -> dict:
+        return {
+            "cfg": to_dict(self.cfg),
+            "state": self.state.value,
+            "paused": self.paused,
+            "session_start_value": self.session_start_value,
+            "day_anchor_value": self.day_anchor_value,
+            "day_anchor_date": self.day_anchor_date.isoformat()
+                               if self.day_anchor_date else None,
+            "trend_open": sorted(self.trend_open),
+            "trend_confirmed": sorted(self.trend_confirmed),
+            "trend_regime": sorted(self.trend_regime),
+            "stop_levels": self.stop_levels,
+            "stop_oids": self.stop_oids,
+        }
+
+    def _save_runtime(self) -> None:
+        # Persistir no puede tumbar el trading: si la BD falla, log y seguir
+        # (el snapshot del siguiente tick lo reintenta solo).
+        if self.session_id is None or self.cfg is None:
+            return
+        try:
+            self.store.save_runtime(self.session_id, json.dumps(self.runtime_payload()))
+        except Exception as e:
+            print(f"[runtime] error guardando: {e}", flush=True)
+
+    def rehydrate(self, session_id: int, started_at: int, payload: dict) -> None:
+        """Reconstruye una sesión viva desde su snapshot tras un reinicio del proceso.
+
+        Las estrategias son deterministas de la cfg (sin estado propio), así que
+        basta restaurar el estado del engine y reconciliar contra el exchange,
+        que es la verdad: posiciones cerradas o stops cancelados con el bot
+        muerto se olvidan aquí.
+        """
+        cfg = session_config_from_dict(payload["cfg"])
+        self.cfg = cfg
+        self.risk = RiskManager(cfg.limits)
+        self.session_id = session_id
+        self.session_started_at = started_at
+        self.grids = {coin: GridStrategy(cfg) for coin in cfg.watchlist}
+        self.trends = {coin: TrendOverlayStrategy(cfg) for coin in cfg.watchlist}
+        self.session_start_value = float(payload.get("session_start_value", 0.0))
+        self.day_anchor_value = float(
+            payload.get("day_anchor_value", self.session_start_value))
+        d = payload.get("day_anchor_date")
+        self.day_anchor_date = date.fromisoformat(d) if d else self._today_local()
+        self.trend_open = set(payload.get("trend_open", []))
+        self.trend_confirmed = set(payload.get("trend_confirmed", []))
+        self.trend_regime = set(payload.get("trend_regime", []))
+        self.stop_levels = {c: float(v) for c, v in
+                            (payload.get("stop_levels") or {}).items()}
+        self.stop_oids = {c: v for c, v in (payload.get("stop_oids") or {}).items()
+                          if v is not None}
+        self.paused = bool(payload.get("paused", False))
+        try:
+            self.state = SessionState(payload.get("state", "scanning"))
+        except ValueError:
+            self.state = SessionState.SCANNING
+        if self.state == SessionState.IDLE:      # nunca debería persistirse, pero por si acaso
+            self.state = SessionState.SCANNING
+        self._reconcile_after_rehydrate()
+        self._save_runtime()
+
+    def _reconcile_after_rehydrate(self) -> None:
+        try:
+            state = self.client.user_state()
+        except Exception as e:
+            # Sin red al arrancar: mantener lo persistido; el tick reconcilia después.
+            self.store.record_risk_event(self.session_id, "rehydrate",
+                                         f"user_state: {e}")
+            return
+        open_coins = {c for c in ((p.get("position", {}) or {}).get("coin")
+                                  for p in state.get("assetPositions", [])) if c}
+        # Posición de tendencia cerrada con el bot muerto (stop ejecutado): fuera,
+        # y su trigger residual (si quedara) se cancela.
+        for c in sorted(self.trend_open - open_coins):
+            oid = self.stop_oids.pop(c, None)
+            self.stop_levels.pop(c, None)
+            if oid is not None:
+                try:
+                    self.client.cancel_order(c, oid)
+                except Exception:
+                    pass
+        self.trend_open &= open_coins
+        # Con la posición ya visible, lo rehidratado abierto queda confirmado.
+        self.trend_confirmed = set(self.trend_open)
+        # Stops rastreados cuyo trigger ya no existe en el exchange (p.ej. el
+        # watchdog canceló el reposo... los triggers no, pero un kill parcial sí
+        # pudo): olvidarlos para que el engine los recoloque al siguiente tick.
+        try:
+            trigger_oids = {o.get("oid") for o in self.client.frontend_open_orders()}
+        except Exception as e:
+            self.store.record_risk_event(self.session_id, "rehydrate",
+                                         f"frontend_open_orders: {e}")
+            return
+        for c, oid in list(self.stop_oids.items()):
+            if oid not in trigger_oids:
+                self.stop_oids.pop(c, None)
+                self.stop_levels.pop(c, None)
 
     def close(self) -> None:
         if self.state not in (SessionState.SCANNING, SessionState.ACTIVE):
@@ -86,6 +190,7 @@ class SessionEngine:
                 except Exception as e:
                     self.store.record_risk_event(
                         self.session_id, "close_error", f"cancel_all {coin}: {e}")
+        self._save_runtime()   # un Close en curso sobrevive a un reinicio
 
     def kill(self, confirm: bool) -> None:
         if not confirm:
@@ -274,6 +379,7 @@ class SessionEngine:
                 self._reset()
             else:
                 self._force_close_positions(asset_positions)
+        self._save_runtime()   # snapshot por tick (tras _reset es no-op)
 
     def _force_close_positions(self, asset_positions: list) -> None:
         # Cierre ACTIVO: el grid no tiene salida propia (solo coloca rungs), así que
@@ -349,19 +455,34 @@ class SessionEngine:
             if d.side is None:
                 raise ValueError("PLACE_MARKET requiere side")
             try:
-                self.client.market_open(coin, d.side == Side.BUY, d.size or 0.0)
+                resp = self.client.market_open(coin, d.side == Side.BUY, d.size or 0.0)
             except ValueError as e:
                 self.store.record_risk_event(self.session_id, "orden_rechazada", str(e))
+                return
+            err = order_response_error(resp)
+            if err:
+                # El SDK devuelve rechazos (margen insuficiente, IOC sin cruce) como
+                # statuses con 'error' SIN excepción: darlos por buenos mete el coin
+                # en trend_open sin posición real y lo deja atascado toda la sesión.
+                self.store.record_risk_event(
+                    self.session_id, "orden_rechazada", f"market_open {coin}: {err}")
                 return
             if not d.reduce_only:
                 self.trend_open.add(coin)
             if self.state != SessionState.CLOSING:
                 self.state = SessionState.ACTIVE
         elif d.action == ActionType.CLOSE:
-            self.client.market_close(coin)
+            err = order_response_error(self.client.market_close(coin))
+            if err:
+                # rechazo sin excepción: dejar rastro; la posición sigue viva y la
+                # reversión se reintenta en el siguiente tick
+                self.store.record_risk_event(
+                    self.session_id, "close_error", f"{coin}: {err}")
         elif d.action == ActionType.SET_STOP:
             if d.side is None or d.price is None:
                 return
+            if coin not in self.trend_open and abs(ms.inventory) <= 1e-12:
+                return  # la entrada de este mismo tick falló: sin posición no hay stop
             closes = [c.close for c in ms.candles]
             highs = [c.high for c in ms.candles]
             lows = [c.low for c in ms.candles]

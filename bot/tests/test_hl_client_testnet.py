@@ -40,3 +40,18 @@ def test_user_fills_and_funding_return_lists():
     client = HLClient(Config.from_env())
     assert isinstance(client.user_fills(), list)
     assert isinstance(client.user_funding(0), list)
+
+
+def test_schedule_cancel_volume_gated_or_ok():
+    # HL gatea el dead man's switch nativo a $1M de volumen acumulado (verificado
+    # 2026-07-13 en testnet; por eso existe hlbot.watchdog). Si algún día se
+    # desbloquea, armar a +60s y desarmar deben funcionar.
+    import time
+    client = HLClient(Config.from_env())
+    if client.exchange is None:
+        pytest.skip("requiere clave de agente para acciones de exchange")
+    resp = client.schedule_cancel(int(time.time() * 1000) + 60_000)
+    if resp.get("status") == "ok":
+        assert client.schedule_cancel(None).get("status") == "ok"
+    else:
+        assert "volume" in str(resp.get("response", "")).lower()

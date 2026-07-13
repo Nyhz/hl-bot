@@ -112,6 +112,15 @@ class Position:
     unrealized_pnl: float = 0.0
 
 
+def session_config_from_dict(d: dict) -> SessionConfig:
+    # Inverso de to_dict(SessionConfig) para rehidratar sesiones. Campos
+    # desconocidos (payload de una versión más nueva) -> TypeError, que el
+    # arranque trata como "no rehidratable" y archiva la sesión.
+    d = dict(d)
+    d["limits"] = RiskLimits(**d["limits"])
+    return SessionConfig(**d)
+
+
 def _convert(value):
     if isinstance(value, Enum):
         return value.value

@@ -1,5 +1,7 @@
 from __future__ import annotations
 import asyncio
+import json
+import os
 import time
 
 import uvicorn
@@ -17,6 +19,9 @@ CANDLE_LOOKBACK_MS = 1000 * 60 * 120   # 120 minutos de velas 1m
 TICK_SECONDS = 5
 PNL_SNAPSHOT_EVERY = 12                 # ~cada minuto a 5s/tick
 ACCOUNT_EXTRAS_EVERY = 6               # cada cuántos ticks refrescar fills/funding (más pesados)
+DMS_EVERY_TICKS = 12                   # re-armar el dead man's switch cada ~60s
+DMS_HORIZON_MS = 180_000               # sin re-arme en 3 min, HL cancela todo el reposo
+HEARTBEAT_FILE = os.path.expanduser("~/.hlbot/heartbeat")
 API_PORT = 3300
 
 
@@ -96,10 +101,122 @@ def persist_candles(store: Store, coin: str, raw: list[dict]) -> None:
             )
 
 
+def refresh_dead_man_switch(engine, client, counters) -> None:
+    # Dead man's switch del exchange: con sesión activa se re-arma un cancel-all
+    # diferido; si el proceso muere o se congela, la escalera del grid deja de
+    # llenarse sola. Sin sesión se desarma (no interferir con órdenes manuales).
+    # OJO: HL lo gatea a $1M de volumen acumulado; si lo rechaza, se desactiva
+    # para el resto del proceso y la protección queda en el watchdog local
+    # (hlbot.watchdog), que cumple la misma función leyendo el heartbeat.
+    if counters.get("dms_unavailable"):
+        return
+    now_ms = int(time.time() * 1000)
+    in_session = engine.cfg is not None
+    armed = counters.get("dms_armed", False)
+    stale = armed and now_ms - counters.get("dms_last_arm_ms", now_ms) > DMS_HORIZON_MS
+    if stale:
+        # El horizonte venció con el bot vivo (tick congelado >3 min): el exchange ya
+        # canceló los stops de tendencia; olvidarlos para que el engine los recoloque.
+        engine.stop_levels.clear()
+        engine.stop_oids.clear()
+    try:
+        if in_session and (not armed or stale
+                           or counters["loop"] % DMS_EVERY_TICKS == 0):
+            resp = client.schedule_cancel(now_ms + DMS_HORIZON_MS)
+            if isinstance(resp, dict) and resp.get("status") != "ok":
+                counters["dms_unavailable"] = True
+                print(f"[dms] no disponible (protege el watchdog): "
+                      f"{resp.get('response')}", flush=True)
+                return
+            counters["dms_armed"] = True
+            counters["dms_last_arm_ms"] = now_ms
+        elif not in_session and armed:
+            client.schedule_cancel(None)
+            counters["dms_armed"] = False
+    except Exception as e:
+        print(f"[dms] error: {e}", flush=True)
+
+
+def write_heartbeat() -> None:
+    # Latido para hlbot.watchdog: "el tick completó una vuelta". Si deja de
+    # escribirse (proceso muerto o congelado), el watchdog cancela el reposo.
+    try:
+        os.makedirs(os.path.dirname(HEARTBEAT_FILE), exist_ok=True)
+        with open(HEARTBEAT_FILE, "w") as f:
+            f.write(str(time.time()))
+    except OSError as e:
+        print(f"[heartbeat] error: {e}", flush=True)
+
+
+def orphan_check(client, notifier) -> None:
+    # Sin sesión que reanudar: si el exchange tiene restos (reinicio con sesión
+    # antigua no rehidratable), cancelar el reposo y avisar. Las posiciones no se
+    # liquidan solas: eso es decisión del usuario (Kill ya soporta huérfanas).
+    try:
+        orders = client.all_open_orders()
+        positions = client.user_state().get("assetPositions", [])
+    except Exception as e:
+        print(f"[startup] orphan check error: {e}", flush=True)
+        return
+    for o in orders:
+        try:
+            client.cancel_order(o["coin"], o["oid"])
+        except Exception as e:
+            print(f"[startup] cancel {o.get('coin')}/{o.get('oid')}: {e}", flush=True)
+    pos_coins = sorted({c for c in ((p.get("position", {}) or {}).get("coin")
+                                    for p in positions) if c})
+    if orders or pos_coins:
+        msg = f"restos sin sesion: {len(orders)} ordenes en reposo canceladas"
+        if pos_coins:
+            msg += f"; posiciones huerfanas en {', '.join(pos_coins)} (usa Kill)"
+        print(f"[startup] {msg}", flush=True)
+        notifier(msg)
+
+
+def recover_session(engine, client, store, cfg, notifier=None) -> None:
+    # Al arrancar: rehidratar la última sesión viva del MODO actual, o modo seguro.
+    if notifier is None:
+        from hlbot.watchdog import notify as notifier
+    mode = "testnet" if cfg.testnet else "mainnet"
+    rows = store.open_sessions(mode)
+    for s in rows[1:]:   # huérfanas más viejas acumuladas por crashes: archivar
+        store.record_risk_event(s["id"], "huerfana",
+                                "archivada al arrancar (hay otra sesion mas reciente)")
+        store.end_session(s["id"])
+    if not rows:
+        orphan_check(client, notifier)
+        return
+    latest = rows[0]
+    if not latest.get("payload"):
+        # sesión de una versión sin runtime persistido: no rehidratable
+        store.record_risk_event(latest["id"], "huerfana",
+                                "sin runtime persistido: no rehidratable")
+        store.end_session(latest["id"])
+        notifier(f"sesion {latest['id']} huerfana archivada; revisando restos")
+        orphan_check(client, notifier)
+        return
+    try:
+        engine.rehydrate(latest["id"], int(latest["started_at"]),
+                         json.loads(latest["payload"]))
+        store.record_risk_event(latest["id"], "rehydrate",
+                                "sesion rehidratada tras reinicio")
+        print(f"[startup] sesion {latest['id']} rehidratada", flush=True)
+        notifier(f"sesion {latest['id']} rehidratada tras reinicio")
+    except Exception as e:
+        # payload corrupto/incompatible: no operar a ciegas — archivar y limpiar
+        engine._reset()
+        store.record_risk_event(latest["id"], "rehydrate", f"fallo: {e}")
+        store.end_session(latest["id"])
+        print(f"[startup] rehidratacion fallida: {e}", flush=True)
+        notifier(f"rehidratacion de sesion {latest['id']} FALLIDA; revisando restos")
+        orphan_check(client, notifier)
+
+
 def run_tick(engine, client, store, shared, cache_holder, counters):
     with engine.lock:
         try:
             counters["loop"] += 1
+            refresh_dead_man_switch(engine, client, counters)
             coins = engine.cfg.watchlist if engine.cfg else []
             now_ms = int(time.time() * 1000)
             funding: dict[str, float] = {}
@@ -126,6 +243,7 @@ def run_tick(engine, client, store, shared, cache_holder, counters):
             cache_holder["v"] = refresh_account_cache(
                 client, engine, cache_holder["v"],
                 fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
+            write_heartbeat()
         except Exception as e:  # red caída, BD, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)
 
@@ -144,6 +262,7 @@ def main() -> None:
     store = Store(cfg.db_path)
     store.init_schema()
     engine = SessionEngine(client, store)
+    recover_session(engine, client, store, cfg)
     shared: dict[str, MarketState] = {}
     cache_holder: dict = {"v": {}}
 
