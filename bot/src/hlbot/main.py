@@ -266,9 +266,11 @@ def update_markouts(store, md, session_id) -> None:
 
 def run_tick(engine, client, store, shared, cache_holder, counters,
              md=None, candle_cache: dict | None = None,
-             funding_cache: dict | None = None):
+             funding_cache: dict | None = None, whales=None):
     if md is not None:
         md.ensure_alive()   # el WS del SDK no reconecta solo
+    if whales is not None:
+        whales.ensure_alive()
     with engine.lock:
         try:
             counters["loop"] += 1
@@ -317,14 +319,14 @@ def run_tick(engine, client, store, shared, cache_holder, counters,
 
 async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
                       shared: dict[str, MarketState], cache_holder: dict,
-                      md=None) -> None:
+                      md=None, whales=None) -> None:
     counters = {"loop": 0, "ticks": 0}
     candle_cache: dict = {}
     funding_cache: dict = {}
     while True:
         await asyncio.to_thread(run_tick, engine, client, store, shared,
                                 cache_holder, counters, md, candle_cache,
-                                funding_cache)
+                                funding_cache, whales)
         await asyncio.sleep(TICK_SECONDS)
 
 
@@ -350,11 +352,20 @@ def main() -> None:
         # sin WS el bot sigue operando por REST (los campos micro quedan None)
         print(f"[marketdata] no arrancó, seguimos por REST: {e}", flush=True)
 
-    app = create_app(engine, cfg.control_token, lambda: shared, lambda: cache_holder["v"])
+    from hlbot.whales import WhaleWatch
+    whales = WhaleWatch(cfg.base_url, cfg.watch_addresses or [])
+    try:
+        whales.start()
+    except Exception as e:
+        print(f"[whales] no arrancó: {e}", flush=True)
+
+    app = create_app(engine, cfg.control_token, lambda: shared,
+                     lambda: cache_holder["v"], whales.recent)
 
     @app.on_event("startup")
     async def _start_loop():
-        asyncio.create_task(_trade_loop(engine, client, store, shared, cache_holder, md))
+        asyncio.create_task(_trade_loop(engine, client, store, shared,
+                                        cache_holder, md, whales))
 
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, log_level="info")
 

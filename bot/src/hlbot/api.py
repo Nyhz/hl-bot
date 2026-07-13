@@ -55,7 +55,8 @@ class BacktestBody(BaseModel):
 
 
 def create_app(engine: SessionEngine, control_token: str,
-               market_state_provider, account_provider=lambda: {}) -> FastAPI:
+               market_state_provider, account_provider=lambda: {},
+               whales_provider=lambda: {}) -> FastAPI:
     app = FastAPI(title="hlbot")
     origin = os.getenv("DASHBOARD_ORIGIN", "http://localhost:3000")
     app.add_middleware(
@@ -216,6 +217,11 @@ def create_app(engine: SessionEngine, control_token: str,
             "equity_curve": engine.store.get_pnl_snapshots(session_id),
             "decisions": engine.store.get_decisions(session_id),
         }
+
+    @app.get("/whales")
+    def whales():
+        # Tape en vivo de las direcciones seguidas (dato público de HL).
+        return whales_provider()
 
     @app.get("/markouts")
     def markouts(session_id: int | None = None):

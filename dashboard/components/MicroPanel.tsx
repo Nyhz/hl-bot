@@ -79,9 +79,16 @@ export function MicroPanel({ snapshot }: { snapshot: Snapshot }) {
         return (
           <div key={coin} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 12 }}>
             <b style={{ minWidth: 42 }}>{coin}</b>
-            <span className="muted" title="spread del BBO en bps" style={{ fontSize: 11 }}>
-              {sp == null ? "ws —" : `${sp.toFixed(1)} bps`}
-            </span>
+            {cv.toxic ? (
+              <span title="toxicity gate: flujo agresivo, grid retirado"
+                    style={{ fontSize: 10, color: "var(--neon-red)", fontWeight: 700 }}>
+                PULLED
+              </span>
+            ) : (
+              <span className="muted" title="spread del BBO en bps" style={{ fontSize: 11 }}>
+                {sp == null ? "ws —" : `${sp.toFixed(1)} bps`}
+              </span>
+            )}
             <FlowBar ratio={cv.flow_ratio} />
           </div>
         );

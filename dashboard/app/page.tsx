@@ -10,6 +10,7 @@ import { AttributionPanel } from "@/components/AttributionPanel";
 import { TradeGrid } from "@/components/TradeGrid";
 import { Watchlist } from "@/components/Watchlist";
 import { MicroPanel } from "@/components/MicroPanel";
+import { WhalePanel } from "@/components/WhalePanel";
 import { Tape } from "@/components/Tape";
 import { LaunchModal } from "@/components/LaunchModal";
 import { useEventFeedback } from "@/hooks/useEventFeedback";
@@ -41,6 +42,7 @@ export default function Home() {
             <AttributionPanel account={snapshot.account} />
             <MicroPanel key={snapshot.session_id ?? "idle"} snapshot={snapshot} />
             <Watchlist coins={snapshot.coins} positions={snapshot.positions} />
+            <WhalePanel />
             <Tape events={snapshot.tape_recent} />
           </div>
         </div>

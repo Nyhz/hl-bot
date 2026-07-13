@@ -11,6 +11,11 @@ export interface CoinView {
   microprice?: number | null;
   sigma?: number | null;
   flow_ratio?: number | null;
+  toxic?: boolean;          // grid retirado por toxicity gate
+}
+export interface WhaleFill {
+  ts: number; coin: string; side: string; px: number; sz: number;
+  dir: string; closed_pnl: number; tid: string;
 }
 export interface L1Actions { orders: number; cancels: number; other: number; total: number; }
 export interface MarkoutRow {

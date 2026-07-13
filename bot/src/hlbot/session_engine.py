@@ -603,6 +603,7 @@ class SessionEngine:
                     "microprice": ms.microprice,
                     "sigma": ms.sigma_px,
                     "flow_ratio": ms.flow_ratio,
+                    "toxic": time.time() < self.toxic_until.get(coin, 0.0),
                 }
         testnet = getattr(getattr(self.client, "cfg", None), "testnet", True)
         return {
