@@ -91,6 +91,10 @@ class RiskLimits:
     # Tope de notional (posición abierta) por moneda. Default permisivo: el cap real
     # de producción llega desde el form/API; aquí no estorba a los tests.
     max_coin_notional: float = 1e9
+    # Tope de DELTA NETO agregado en $ (Σ notional firmado entre monedas): los
+    # majors correlacionan >0.8, así que N longs "diversificados" son una sola
+    # posición grande. Default permisivo por el mismo motivo que arriba.
+    max_net_delta: float = 1e9
 
 
 @dataclass
@@ -120,6 +124,10 @@ class SessionConfig:
     toxicity_flow_ratio: float = 0.7     # |flow_ratio| que dispara la retirada
     toxicity_min_usd: float = 20000.0    # volumen mínimo en ventana para fiarse de la señal
     toxicity_cooldown_s: float = 30.0    # cuánto tiempo retirarse tras dispararse
+    # Vol-sizing del rung: notional = clamp(risk_per_rung_usd / (sigma/mid),
+    # $10 mínimo de HL, max_position_notional). 0 = desactivado (tamaño fijo v1).
+    # Solo muerde si max_position_notional > $10 (el mínimo de HL es el suelo).
+    risk_per_rung_usd: float = 0.0
 
 
 @dataclass

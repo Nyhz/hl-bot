@@ -23,6 +23,7 @@ class LimitsBody(BaseModel):
     daily_loss_limit: float
     total_loss_limit: float
     max_coin_notional: float = 30.0
+    max_net_delta: float = 30.0    # tope de delta neto agregado en $ entre monedas
 
 
 class LaunchBody(BaseModel):

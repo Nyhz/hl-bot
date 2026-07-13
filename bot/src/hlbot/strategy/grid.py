@@ -71,8 +71,16 @@ class GridStrategy:
     def half_spread(self, ms: MarketState, sigma: float) -> float:
         return max(self.cfg.min_spread_frac * ms.mid, self.cfg.spread_vol_mult * sigma)
 
-    def _rung_size(self, price: float) -> float:
-        return self.cfg.limits.max_position_notional / price
+    def _rung_notional(self, ms: MarketState, sigma: float) -> float:
+        # Vol-sizing: mismo riesgo $ por rung en monedas de vol distinta
+        # (notional × sigma_frac ≈ risk_per_rung_usd). Suelo $10 (mínimo HL),
+        # techo max_position_notional. Desactivado (0) -> tamaño fijo v1.
+        base = self.cfg.limits.max_position_notional
+        k = self.cfg.risk_per_rung_usd
+        if k <= 0 or sigma <= 0 or ms.mid <= 0:
+            return base
+        sigma_frac = sigma / ms.mid
+        return max(10.0, min(base, k / sigma_frac))
 
     def _ladder(self, ms: MarketState) -> tuple[float, float, list[tuple[float, Side]]]:
         sigma = self._sigma(ms)
@@ -103,7 +111,7 @@ class GridStrategy:
         out: list[Decision] = []
         for price, side in rungs:
             out.append(Decision(ms.coin, ActionType.PLACE_LIMIT, side=side,
-                                price=price, size=self._rung_size(price),
+                                price=price, size=self._rung_notional(ms, sigma) / price,
                                 reason=f"grid rung {price:.4f} (res {res:.2f})"))
         return out
 

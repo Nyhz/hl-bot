@@ -895,3 +895,80 @@ def test_engine_has_lock_and_is_free():
     assert isinstance(eng.lock, type(threading.Lock()))
     assert eng.lock.acquire(blocking=False) is True   # libre
     eng.lock.release()
+
+
+def test_net_delta_cap_blocks_growth_allows_reduction():
+    # BTC largo $28 con cap de delta neto $30: un BUY de $10 en ETH aleja de
+    # cero (38) -> rechazado; un SELL de $10 acerca (18) -> permitido
+    from hlbot.models import Decision, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "BTC", "szi": "0.0005", "positionValue": "28"}}]
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 4, 9.0, 50.0, 200.0, 300.0, 30.0)   # max_net_delta=30
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(cfg)
+
+    class _Grid:
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                             price=2990.0, size=10.0 / 2990.0, reason="buy rung"),
+                    Decision("ETH", ActionType.PLACE_LIMIT, side=Side.SELL,
+                             price=3010.0, size=10.0 / 3010.0, reason="sell rung")]
+        def half_spread(self, ms, sigma): return 1.0
+        def _sigma(self, ms): return 1.0
+        def too_toxic(self, ms): return False
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+
+    class _NoTrend:
+        def is_trending(self, ms): return False
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+
+    eng.grids["ETH"] = _Grid()
+    eng.trends["ETH"] = _NoTrend()
+    eng.tick(_flat_ms())
+    buys = [o for o in client.orders if o[1] is True]
+    sells = [o for o in client.orders if o[1] is False]
+    assert buys == []                                   # bloqueado: alejaría de cero
+    assert sells                                        # permitido: reduce |delta|
+    assert any("max_net_delta" in d for _, d in store.risk_events)
+
+
+def test_net_delta_cap_allows_reduction_when_already_over():
+    # corto neto -$35 (ya por encima del cap 30): un BUY de $10 REDUCE |delta|
+    # a 25 -> debe pasar aunque el estado previo violara el cap
+    from hlbot.models import Decision, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "BTC", "szi": "-0.0006", "positionValue": "35"}}]
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 4, 9.0, 50.0, 200.0, 300.0, 30.0)
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(cfg)
+
+    class _Grid:
+        def evaluate(self, ms):
+            return [Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                             price=2990.0, size=10.0 / 2990.0, reason="buy rung")]
+        def half_spread(self, ms, sigma): return 1.0
+        def _sigma(self, ms): return 1.0
+        def too_toxic(self, ms): return False
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+
+    class _NoTrend:
+        def is_trending(self, ms): return False
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+
+    eng.grids["ETH"] = _Grid()
+    eng.trends["ETH"] = _NoTrend()
+    eng.tick(_flat_ms())
+    assert any(o[1] is True for o in client.orders)     # el BUY reductor pasó

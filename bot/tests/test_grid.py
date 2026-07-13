@@ -124,3 +124,25 @@ def test_too_toxic_requires_ratio_and_volume():
     assert g.too_toxic(ms) is True              # también en dirección vendedora
     ms.flow_ratio = 0.3
     assert g.too_toxic(ms) is False             # flujo mixto: cotizar normal
+
+
+# ---------- F5: vol-sizing del rung ----------
+
+def test_rung_notional_fixed_when_disabled():
+    g = GridStrategy(_cfg())                            # risk_per_rung_usd=0
+    ms = _ms()
+    assert g._rung_notional(ms, sigma=50.0) == 10.0     # tamaño fijo v1
+
+
+def test_rung_notional_scales_inverse_to_vol():
+    limits = RiskLimits(40.0, 4, 2.0, 5.0, 20.0, 120.0)  # cap por posición $40
+    cfg = SessionConfig(watchlist=["ETH"], capital=200.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02, risk_per_rung_usd=0.05)
+    g = GridStrategy(cfg)
+    ms = _ms(mid=3000.0)
+    calm = g._rung_notional(ms, sigma=3.0)               # sigma_frac=0.1% -> 0.05/0.001=50 -> cap 40
+    wild = g._rung_notional(ms, sigma=30.0)              # 1% -> $5 -> suelo $10
+    assert calm == 40.0
+    assert wild == 10.0
+    mid_vol = g._rung_notional(ms, sigma=7.5)            # 0.25% -> $20
+    assert abs(mid_vol - 20.0) < 1e-9

@@ -38,6 +38,7 @@ class SessionEngine:
         # coin -> epoch hasta el que el grid NO cotiza (toxicity gate). Estado
         # transitorio (≤cooldown): no se persiste; tras reiniciar se re-evalúa.
         self.toxic_until: dict[str, float] = {}
+        self._net_delta = 0.0   # Σ notional firmado entre monedas (se recalcula por tick)
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
@@ -304,7 +305,8 @@ class SessionEngine:
         return out
 
     def _risk_ok(self, notional: float, n_open: int, equity: float,
-                 gross: float, coin_notional: float) -> bool:
+                 gross: float, coin_notional: float,
+                 signed_notional: float = 0.0) -> bool:
         # Leverage REAL = (notional bruto abierto + esta orden) / equity de la cuenta.
         lev = (gross + notional) / equity if equity > 0 else 1e9
         ok, reason = self.risk.can_open(notional, n_open, lev)
@@ -314,6 +316,14 @@ class SessionEngine:
         if coin_notional + notional > self.cfg.limits.max_coin_notional:
             self.store.record_risk_event(
                 self.session_id, "rechazo", "excede max_coin_notional")
+            return False
+        # Delta neto de CARTERA: majors correlacionados -> N longs = 1 posición
+        # grande. Bloquea solo lo que ALEJA de cero (reducir |delta| siempre pasa).
+        after = self._net_delta + signed_notional
+        if (abs(after) > self.cfg.limits.max_net_delta
+                and abs(after) > abs(self._net_delta)):
+            self.store.record_risk_event(
+                self.session_id, "rechazo", "excede max_net_delta")
             return False
         return True
 
@@ -329,11 +339,16 @@ class SessionEngine:
         equity = float(state.get("marginSummary", {}).get("accountValue", 0) or 0)
         gross = sum(pos_notionals.values())
         pos_sizes = {}
+        net_delta = 0.0
         for p in asset_positions:
             pos = p.get("position", {}) or {}
             coin = pos.get("coin")
             if coin:
-                pos_sizes[coin] = float(pos.get("szi", 0) or 0)
+                szi = float(pos.get("szi", 0) or 0)
+                pos_sizes[coin] = szi
+                val = abs(float(pos.get("positionValue", 0) or 0))
+                net_delta += val if szi > 0 else (-val if szi < 0 else 0.0)
+        self._net_delta = net_delta
         # Confirmar posiciones de tendencia ya visibles; limpiar SOLO las que estaban
         # confirmadas y han desaparecido (stop ejecutado) -> evita doble entrada por
         # latencia de fill (la posición recién abierta aún no aparece en user_state).
@@ -437,7 +452,8 @@ class SessionEngine:
         if d.reduce_only or shrinks:
             return True
         notional = (d.price or 0) * (d.size or 0)
-        return self._risk_ok(notional, n_open, equity, gross, coin_notional)
+        signed = notional if d.side == Side.BUY else -notional
+        return self._risk_ok(notional, n_open, equity, gross, coin_notional, signed)
 
     def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
         try:
@@ -499,7 +515,9 @@ class SessionEngine:
                 return
             if not d.reduce_only:
                 notional = ms.mid * (d.size or 0)
-                if not self._risk_ok(notional, n_open, equity, gross, coin_notional):
+                signed = notional if d.side == Side.BUY else -notional
+                if not self._risk_ok(notional, n_open, equity, gross,
+                                     coin_notional, signed):
                     return
             if d.side is None:
                 raise ValueError("PLACE_MARKET requiere side")
