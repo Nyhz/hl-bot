@@ -40,6 +40,16 @@ class MarketState:
     candles: list[Candle] = field(default_factory=list)
     funding_rate: float | None = None
     inventory: float = 0.0
+    # Microestructura en vivo (WebSocket). None = sin dato fresco (REST puro o
+    # backtest): las estrategias DEGRADAN a mid/ATR cuando faltan.
+    best_bid: float | None = None
+    best_ask: float | None = None
+    bid_sz: float | None = None
+    ask_sz: float | None = None
+    microprice: float | None = None
+    sigma_px: float | None = None       # vol realizada proyectada, en unidades de precio
+    flow_usd: float | None = None       # USD firmado del tape (ventana corta)
+    flow_ratio: float | None = None     # firmado/total en [-1, 1]; None sin volumen
 
 
 @dataclass

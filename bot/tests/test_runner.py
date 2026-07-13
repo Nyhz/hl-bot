@@ -17,10 +17,44 @@ class _FakeClient:
     def candles(self, coin, interval, start, end): return RAW
 
 def test_build_market_state():
-    ms, raw = build_market_state(_FakeClient(), "ETH", now_ms=999)
-    assert ms.coin == "ETH" and ms.mid == 11.5
+    ms, raw, refreshed = build_market_state(_FakeClient(), "ETH", now_ms=999)
+    assert ms.coin == "ETH" and ms.mid == 11.5          # fallback REST sin marketdata
     assert len(ms.candles) == 2
-    assert raw is RAW
+    assert raw is RAW and refreshed is True
+    assert ms.microprice is None and ms.sigma_px is None  # sin WS: degradado
+
+
+def test_build_market_state_uses_ws_and_candle_cache():
+    from hlbot.marketdata import MarketData
+
+    class _NoMidClient(_FakeClient):
+        def mid(self, coin):
+            raise AssertionError("con WS fresco no debe pegar al REST de mids")
+
+    md = MarketData("https://x", ["ETH"])                # sin start(): sin red
+    md._on_bbo({"data": {"coin": "ETH", "bbo": [
+        {"px": "3000", "sz": "10"}, {"px": "3002", "sz": "2"}]}})
+    md._on_trades({"data": [
+        {"coin": "ETH", "px": "3001", "sz": "1", "side": "B"},
+        {"coin": "ETH", "px": "3000", "sz": "0.5", "side": "A"}]})
+
+    cache: dict = {}
+    ms, raw, refreshed = build_market_state(_NoMidClient(), "ETH", now_ms=999,
+                                            md=md, candle_cache=cache)
+    assert ms.mid == 3001.0                              # mid del bbo WS
+    assert ms.best_bid == 3000.0 and ms.ask_sz == 2.0
+    # microprice cargado hacia el ask (bid 5x más grueso que el ask)
+    assert ms.microprice is not None and ms.microprice > ms.mid
+    assert ms.flow_usd is not None and ms.flow_usd > 0   # flujo neto comprador
+    assert -1.0 <= ms.flow_ratio <= 1.0
+    assert refreshed is True and "ETH" in cache
+    # segunda llamada dentro del TTL: velas de caché, sin REST
+    class _NoCandles(_NoMidClient):
+        def candles(self, *a):
+            raise AssertionError("velas dentro del TTL deben salir de la caché")
+    ms2, raw2, refreshed2 = build_market_state(_NoCandles(), "ETH", now_ms=1000,
+                                               md=md, candle_cache=cache)
+    assert refreshed2 is False and raw2 is RAW
 
 
 class _AcctClient:

@@ -16,6 +16,8 @@ from hlbot.account import compose_account
 
 CANDLE_INTERVAL = "1m"
 CANDLE_LOOKBACK_MS = 1000 * 60 * 120   # 120 minutos de velas 1m
+CANDLE_REFRESH_MS = 30_000             # velas 1m por REST cada 30s, no cada tick (pesan 20)
+FLOW_READ_WINDOW_S = 15.0              # ventana de lectura del tape para flow_ratio
 TICK_SECONDS = 5
 PNL_SNAPSHOT_EVERY = 12                 # ~cada minuto a 5s/tick
 ACCOUNT_EXTRAS_EVERY = 6               # cada cuántos ticks refrescar fills/funding (más pesados)
@@ -83,10 +85,37 @@ def candles_to_models(raw: list[dict]) -> list[Candle]:
     return out
 
 
-def build_market_state(client, coin: str, now_ms: int) -> tuple[MarketState, list[dict]]:
-    mid = client.mid(coin)
-    raw = client.candles(coin, CANDLE_INTERVAL, now_ms - CANDLE_LOOKBACK_MS, now_ms)
-    return MarketState(coin=coin, mid=mid, candles=candles_to_models(raw)), raw
+def build_market_state(client, coin: str, now_ms: int, md=None,
+                       candle_cache: dict | None = None) -> tuple[MarketState, list[dict], bool]:
+    """Estado de mercado del tick. Devuelve (ms, velas_raw, velas_refrescadas).
+
+    Con WebSocket fresco el mid sale del bbo (sub-segundo, sin REST) y se pueblan
+    los campos de microestructura; sin él, degrada al REST de siempre. Las velas
+    1m se refrescan cada CANDLE_REFRESH_MS (cambiarlas cada tick es tirar weight).
+    """
+    ent = candle_cache.get(coin) if candle_cache is not None else None
+    refreshed = not (ent and now_ms - ent[0] < CANDLE_REFRESH_MS)
+    if refreshed:
+        raw = client.candles(coin, CANDLE_INTERVAL, now_ms - CANDLE_LOOKBACK_MS, now_ms)
+        if candle_cache is not None:
+            candle_cache[coin] = (now_ms, raw)
+    else:
+        raw = ent[1]
+    ms = MarketState(coin=coin, mid=0.0, candles=candles_to_models(raw))
+    if md is not None:
+        b = md.bbo(coin)
+        if b:
+            ms.best_bid, ms.bid_sz = b["bid_px"], b["bid_sz"]
+            ms.best_ask, ms.ask_sz = b["ask_px"], b["ask_sz"]
+            ms.mid = (b["bid_px"] + b["ask_px"]) / 2.0
+            ms.microprice = md.microprice(coin)
+            ms.sigma_px = md.sigma_px(coin)
+            signed, total = md.flow(coin, FLOW_READ_WINDOW_S)
+            ms.flow_usd = signed
+            ms.flow_ratio = (signed / total) if total > 0 else None
+    if ms.mid <= 0:
+        ms.mid = client.mid(coin)   # fallback REST (WS frío o sin marketdata)
+    return ms, raw, refreshed
 
 
 def persist_candles(store: Store, coin: str, raw: list[dict]) -> None:
@@ -212,7 +241,10 @@ def recover_session(engine, client, store, cfg, notifier=None) -> None:
         orphan_check(client, notifier)
 
 
-def run_tick(engine, client, store, shared, cache_holder, counters):
+def run_tick(engine, client, store, shared, cache_holder, counters,
+             md=None, candle_cache: dict | None = None):
+    if md is not None:
+        md.ensure_alive()   # el WS del SDK no reconecta solo
     with engine.lock:
         try:
             counters["loop"] += 1
@@ -227,11 +259,12 @@ def run_tick(engine, client, store, shared, cache_holder, counters):
                     print(f"[trade_loop] funding error: {e}", flush=True)
             states: dict[str, MarketState] = {}
             for coin in coins:
-                ms, raw = build_market_state(client, coin, now_ms)
+                ms, raw, refreshed = build_market_state(client, coin, now_ms, md, candle_cache)
                 ms.funding_rate = funding.get(coin)
                 states[coin] = ms
                 shared[coin] = ms
-                persist_candles(store, coin, raw)
+                if refreshed:
+                    persist_candles(store, coin, raw)
             if states:
                 engine.tick(states)
                 counters["ticks"] += 1
@@ -249,10 +282,13 @@ def run_tick(engine, client, store, shared, cache_holder, counters):
 
 
 async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
-                      shared: dict[str, MarketState], cache_holder: dict) -> None:
+                      shared: dict[str, MarketState], cache_holder: dict,
+                      md=None) -> None:
     counters = {"loop": 0, "ticks": 0}
+    candle_cache: dict = {}
     while True:
-        await asyncio.to_thread(run_tick, engine, client, store, shared, cache_holder, counters)
+        await asyncio.to_thread(run_tick, engine, client, store, shared,
+                                cache_holder, counters, md, candle_cache)
         await asyncio.sleep(TICK_SECONDS)
 
 
@@ -266,11 +302,23 @@ def main() -> None:
     shared: dict[str, MarketState] = {}
     cache_holder: dict = {"v": {}}
 
+    from hlbot.api import LIQUID_MAJORS
+    from hlbot.marketdata import MarketData
+    # Solo monedas del universo real: una suscripción a un coin inexistente
+    # (p.ej. XRP en testnet) hace que HL cierre el websocket ENTERO.
+    md_coins = [c for c in LIQUID_MAJORS if c in getattr(client, "sz_decimals", {})]
+    md = MarketData(cfg.base_url, md_coins)
+    try:
+        md.start()
+    except Exception as e:
+        # sin WS el bot sigue operando por REST (los campos micro quedan None)
+        print(f"[marketdata] no arrancó, seguimos por REST: {e}", flush=True)
+
     app = create_app(engine, cfg.control_token, lambda: shared, lambda: cache_holder["v"])
 
     @app.on_event("startup")
     async def _start_loop():
-        asyncio.create_task(_trade_loop(engine, client, store, shared, cache_holder))
+        asyncio.create_task(_trade_loop(engine, client, store, shared, cache_holder, md))
 
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, log_level="info")
 

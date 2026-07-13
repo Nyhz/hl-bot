@@ -531,6 +531,11 @@ class SessionEngine:
                     "triggers": [to_dict(t) for t in active.armed_triggers(ms)],
                     "conditions": [to_dict(c) for c in conds],
                     "armed": all(c.met for c in conds) if conds else False,
+                    # microestructura (None sin WS fresco) — la pinta el dashboard
+                    "bbo": [ms.best_bid, ms.best_ask],
+                    "microprice": ms.microprice,
+                    "sigma": ms.sigma_px,
+                    "flow_ratio": ms.flow_ratio,
                 }
         testnet = getattr(getattr(self.client, "cfg", None), "testnet", True)
         return {
