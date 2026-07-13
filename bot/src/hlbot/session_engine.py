@@ -11,7 +11,7 @@ from hlbot.strategy.grid import GridStrategy
 from hlbot.strategy.trend import TrendOverlayStrategy
 from hlbot.risk import RiskManager
 from hlbot.indicators import atr
-from hlbot.hl_client import order_response_error
+from hlbot.hl_client import order_response_error, order_response_errors
 
 
 class SessionEngine:
@@ -427,26 +427,54 @@ class SessionEngine:
                 self.store.record_risk_event(
                     self.session_id, "close_error", f"{coin}: {err}")
 
+    def _limit_allowed(self, ms, d, n_open, equity, gross, coin_notional) -> bool:
+        # Un rung del lado contrario que no supera el inventario REDUCE la posición:
+        # no debe pasar por can_open/max_coin_notional (bloquearlo congela la
+        # posición en el cap sin vía de salida).
+        reduces = ((d.side == Side.SELL and ms.inventory > 1e-12)
+                   or (d.side == Side.BUY and ms.inventory < -1e-12))
+        shrinks = reduces and (d.size or 0) <= abs(ms.inventory) + 1e-12
+        if d.reduce_only or shrinks:
+            return True
+        notional = (d.price or 0) * (d.size or 0)
+        return self._risk_ok(notional, n_open, equity, gross, coin_notional)
+
     def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
         try:
             desired = [(d.price, d) for d in decisions if d.action == ActionType.PLACE_LIMIT]
             grid = self.grids[coin]
             tol = max(grid.half_spread(ms, grid._sigma(ms)) / 2.0, 1e-9)
             open_orders = self.client.open_orders(coin)
-            # 1) cancelar stale: órdenes en reposo lejos de cualquier precio deseado
-            for o in open_orders:
-                px = float(o.get("limitPx", 0) or 0)
-                oid = o.get("oid")
-                if oid is None:
-                    continue
-                if not any(abs(px - dp) <= tol for dp, _ in desired):
-                    self.client.cancel_order(coin, oid)
-            # 2) colocar las deseadas que no tengan ya una orden cerca (guards vía _apply/_risk_ok)
+            # 1) cancelar stale en UN batch: reposo lejos de cualquier precio deseado
+            stale = [o["oid"] for o in open_orders
+                     if o.get("oid") is not None
+                     and not any(abs(float(o.get("limitPx", 0) or 0) - dp) <= tol
+                                 for dp, _ in desired)]
+            if stale:
+                self.client.cancel_orders(coin, stale)
+            # 2) colocar las deseadas que falten, también en UN batch
             rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
-            for dp, d in desired:
-                if any(abs(dp - rp) <= tol for rp in rest_px):
-                    continue
-                self._apply(coin, ms, d, n_open, equity, gross, coin_notional)
+            to_place = [d for dp, d in desired
+                        if not any(abs(dp - rp) <= tol for rp in rest_px)
+                        and self._limit_allowed(ms, d, n_open, equity, gross, coin_notional)]
+            if not to_place:
+                return
+            if d_side_missing := [d for d in to_place if d.side is None]:
+                raise ValueError(f"PLACE_LIMIT sin side: {d_side_missing[0].reason}")
+            resp = self.client.bulk_place_limits(
+                coin, [{"is_buy": d.side == Side.BUY, "price": d.price,
+                        "size": d.size, "reduce_only": d.reduce_only} for d in to_place])
+            placed_any = False
+            for d, err in zip(to_place, order_response_errors(resp, len(to_place))):
+                if err:
+                    self.store.record_risk_event(
+                        self.session_id, "orden_rechazada", f"{coin}: {err}")
+                else:
+                    placed_any = True
+                    self.store.record_decision(self.session_id, coin,
+                                               d.action.value, d.reason)
+            if placed_any and self.state != SessionState.CLOSING:
+                self.state = SessionState.ACTIVE
         except Exception as e:
             self.store.record_risk_event(self.session_id, "reconcile_error", str(e))
             return
@@ -454,16 +482,8 @@ class SessionEngine:
     def _apply(self, coin: str, ms: MarketState, d, n_open: int,
                equity: float, gross: float, coin_notional: float) -> None:
         if d.action == ActionType.PLACE_LIMIT:
-            # Un rung del lado contrario que no supera el inventario REDUCE la posición:
-            # no debe pasar por can_open/max_coin_notional (bloquearlo congela la
-            # posición en el cap sin vía de salida).
-            reduces = ((d.side == Side.SELL and ms.inventory > 1e-12)
-                       or (d.side == Side.BUY and ms.inventory < -1e-12))
-            shrinks = reduces and (d.size or 0) <= abs(ms.inventory) + 1e-12
-            if not d.reduce_only and not shrinks:
-                notional = (d.price or 0) * (d.size or 0)
-                if not self._risk_ok(notional, n_open, equity, gross, coin_notional):
-                    return
+            if not self._limit_allowed(ms, d, n_open, equity, gross, coin_notional):
+                return
             if d.side is None:
                 raise ValueError("PLACE_LIMIT requiere side")
             try:

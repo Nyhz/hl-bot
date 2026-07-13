@@ -78,6 +78,10 @@ MIGRATIONS = [
     "ALTER TABLE funding_payments ADD COLUMN fkey TEXT",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_tid ON fills(tid)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_funding_fkey ON funding_payments(fkey)",
+    # Markouts por fill (bps a +5s/+30s/+120s; NULL = pendiente o sin histórico)
+    "ALTER TABLE fills ADD COLUMN markout_5s REAL",
+    "ALTER TABLE fills ADD COLUMN markout_30s REAL",
+    "ALTER TABLE fills ADD COLUMN markout_120s REAL",
 ]
 
 
@@ -244,6 +248,35 @@ class Store:
                 "LEFT JOIN session_runtime r ON r.session_id = s.id "
                 "WHERE s.ended_at IS NULL AND s.mode = ? ORDER BY s.id DESC",
                 (mode,)).fetchall()
+            return [dict(r) for r in rows]
+
+    MARKOUT_COLS = {5: "markout_5s", 30: "markout_30s", 120: "markout_120s"}
+
+    def fills_missing_markout(self, session_id: int, horizon_s: int,
+                              now: float, max_lookback_s: float) -> list[dict]:
+        # Fills cuyo horizonte ya venció y siguen sin markout, dentro de la
+        # ventana que el histórico de precios en memoria aún cubre.
+        col = self.MARKOUT_COLS[horizon_s]
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT id, coin, side, price, ts FROM fills "
+                f"WHERE session_id=? AND {col} IS NULL "
+                f"AND ts + ? <= ? AND ts >= ?",
+                (session_id, horizon_s, now, now - max_lookback_s)).fetchall()
+            return [dict(r) for r in rows]
+
+    def set_fill_markout(self, fill_id: int, horizon_s: int, bps: float) -> None:
+        col = self.MARKOUT_COLS[horizon_s]
+        with self._conn() as conn:
+            conn.execute(f"UPDATE fills SET {col}=? WHERE id=?", (bps, fill_id))
+
+    def markout_summary(self, session_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT coin, COUNT(markout_5s) AS n, AVG(markout_5s) AS m5, "
+                "AVG(markout_30s) AS m30, AVG(markout_120s) AS m120 "
+                "FROM fills WHERE session_id=? AND markout_5s IS NOT NULL "
+                "GROUP BY coin", (session_id,)).fetchall()
             return [dict(r) for r in rows]
 
     def get_funding(self, session_id: int) -> list[dict]:

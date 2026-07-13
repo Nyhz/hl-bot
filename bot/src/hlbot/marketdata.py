@@ -26,6 +26,8 @@ MAX_AGE_S = 3.0           # frescura máxima para servir un dato
 RESTART_AFTER_S = 30.0    # silencio total del feed -> reconectar
 VOL_HALFLIFE_S = 60.0     # semivida de la EWMA de varianza realizada
 TAPE_RETENTION_S = 60.0   # cuánto tape se retiene (la ventana de lectura es menor)
+PX_HIST_RETENTION_S = 180.0   # histórico de mids para markouts (+5s/+30s/+120s)
+PX_HIST_MIN_GAP_S = 0.5       # muestreo máximo del histórico (bbo puede ser muy denso)
 
 
 class MarketData:
@@ -35,6 +37,7 @@ class MarketData:
         self._lock = threading.Lock()
         self._bbo: dict[str, dict] = {}
         self._tape: dict[str, deque] = {c: deque() for c in self.coins}
+        self._px_hist: dict[str, deque] = {c: deque() for c in self.coins}
         # coin -> (varianza por segundo EWMA, último mid, ts del último mid)
         self._vol: dict[str, tuple[float, float, float]] = {}
         self._last_msg_ts = 0.0
@@ -98,6 +101,12 @@ class MarketData:
             self._bbo[coin] = {"bid_px": bpx, "bid_sz": bsz,
                                "ask_px": apx, "ask_sz": asz, "ts": now}
             mid = (bpx + apx) / 2.0
+            hist = self._px_hist.setdefault(coin, deque())
+            if not hist or now - hist[-1][0] >= PX_HIST_MIN_GAP_S:
+                hist.append((now, mid))
+                cutoff = now - PX_HIST_RETENTION_S
+                while hist and hist[0][0] < cutoff:
+                    hist.popleft()
             var, last_mid, last_ts = self._vol.get(coin, (0.0, 0.0, 0.0))
             if last_mid > 0 and mid > 0:
                 dt = max(now - last_ts, 1e-3)
@@ -168,6 +177,16 @@ class MarketData:
                     signed += susd
                     total += abs(susd)
         return signed, total
+
+    def mid_at(self, coin: str, ts: float, tol_s: float = 2.0) -> float | None:
+        """Mid histórico más cercano a ts (para markouts). None si no hay muestra
+        a menos de tol_s (hueco del feed o ts fuera de la retención)."""
+        with self._lock:
+            hist = self._px_hist.get(coin)
+            if not hist:
+                return None
+            best_ts, best_px = min(hist, key=lambda p: abs(p[0] - ts))
+        return best_px if abs(best_ts - ts) <= tol_s else None
 
     def ws_age(self) -> float:
         return time.time() - self._last_msg_ts if self._last_msg_ts else float("inf")

@@ -76,6 +76,7 @@ def create_app(engine: SessionEngine, control_token: str,
             snap["account"] = acc
             snap["positions"] = acc.get("positions", [])
             snap["tape_recent"] = merge_tape(decisions, fills, limit=20)
+            snap["l1_actions"] = getattr(engine.client, "l1_actions", {})
             return snap
         except Exception as e:
             print(f"[snapshot] error: {e}", flush=True)
@@ -214,6 +215,15 @@ def create_app(engine: SessionEngine, control_token: str,
             "equity_curve": engine.store.get_pnl_snapshots(session_id),
             "decisions": engine.store.get_decisions(session_id),
         }
+
+    @app.get("/markouts")
+    def markouts(session_id: int | None = None):
+        # Calidad de fills: bps medios a favor a +5s/+30s/+120s por moneda.
+        # Persistentemente negativo = selección adversa (fills tóxicos).
+        sid = session_id if session_id is not None else engine.session_id
+        if sid is None:
+            return []
+        return engine.store.markout_summary(sid)
 
     @app.get("/stats/global")
     def stats_global():

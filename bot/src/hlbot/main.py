@@ -17,7 +17,9 @@ from hlbot.account import compose_account
 CANDLE_INTERVAL = "1m"
 CANDLE_LOOKBACK_MS = 1000 * 60 * 120   # 120 minutos de velas 1m
 CANDLE_REFRESH_MS = 30_000             # velas 1m por REST cada 30s, no cada tick (pesan 20)
+FUNDING_REFRESH_S = 60.0               # funding cambia lento; metaAndAssetCtxs pesa 20
 FLOW_READ_WINDOW_S = 15.0              # ventana de lectura del tape para flow_ratio
+MARKOUT_HORIZONS_S = (5, 30, 120)      # bps a favor del fill a +5s/+30s/+120s
 TICK_SECONDS = 5
 PNL_SNAPSHOT_EVERY = 12                 # ~cada minuto a 5s/tick
 ACCOUNT_EXTRAS_EVERY = 6               # cada cuántos ticks refrescar fills/funding (más pesados)
@@ -242,8 +244,29 @@ def recover_session(engine, client, store, cfg, notifier=None) -> None:
         orphan_check(client, notifier)
 
 
+def update_markouts(store, md, session_id) -> None:
+    # Markout = evolución del mid tras cada fill, en bps FIRMADOS a favor del
+    # fill (comprar y que luego suba = positivo). Sistemáticamente negativo =
+    # selección adversa medida: EL número que dice si el grid pierde por tóxico.
+    if md is None or session_id is None:
+        return
+    from hlbot.marketdata import PX_HIST_RETENTION_S
+    now = time.time()
+    for h in MARKOUT_HORIZONS_S:
+        pending = store.fills_missing_markout(session_id, h, now,
+                                              PX_HIST_RETENTION_S - h)
+        for f in pending:
+            ref = md.mid_at(f["coin"], f["ts"] + h)
+            if ref is None or not f["price"]:
+                continue   # hueco del feed: quedará NULL al salir de la ventana
+            sign = 1.0 if f["side"] == "B" else -1.0
+            bps = sign * (ref - f["price"]) / f["price"] * 1e4
+            store.set_fill_markout(f["id"], h, bps)
+
+
 def run_tick(engine, client, store, shared, cache_holder, counters,
-             md=None, candle_cache: dict | None = None):
+             md=None, candle_cache: dict | None = None,
+             funding_cache: dict | None = None):
     if md is not None:
         md.ensure_alive()   # el WS del SDK no reconecta solo
     with engine.lock:
@@ -254,10 +277,19 @@ def run_tick(engine, client, store, shared, cache_holder, counters,
             now_ms = int(time.time() * 1000)
             funding: dict[str, float] = {}
             if coins:
-                try:
-                    funding = client.funding_rates()
-                except Exception as e:
-                    print(f"[trade_loop] funding error: {e}", flush=True)
+                fresh = (funding_cache is not None
+                         and time.time() - funding_cache.get("ts", 0) <= FUNDING_REFRESH_S)
+                if fresh:
+                    funding = funding_cache.get("v", {})
+                else:
+                    try:
+                        funding = client.funding_rates()
+                        if funding_cache is not None:
+                            funding_cache["ts"] = time.time()
+                            funding_cache["v"] = funding
+                    except Exception as e:
+                        print(f"[trade_loop] funding error: {e}", flush=True)
+                        funding = (funding_cache or {}).get("v", {})
             states: dict[str, MarketState] = {}
             for coin in coins:
                 ms, raw, refreshed = build_market_state(client, coin, now_ms, md, candle_cache)
@@ -277,6 +309,7 @@ def run_tick(engine, client, store, shared, cache_holder, counters,
             cache_holder["v"] = refresh_account_cache(
                 client, engine, cache_holder["v"],
                 fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
+            update_markouts(store, md, engine.session_id)
             write_heartbeat()
         except Exception as e:  # red caída, BD, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)
@@ -287,9 +320,11 @@ async def _trade_loop(engine: SessionEngine, client: HLClient, store: Store,
                       md=None) -> None:
     counters = {"loop": 0, "ticks": 0}
     candle_cache: dict = {}
+    funding_cache: dict = {}
     while True:
         await asyncio.to_thread(run_tick, engine, client, store, shared,
-                                cache_holder, counters, md, candle_cache)
+                                cache_holder, counters, md, candle_cache,
+                                funding_cache)
         await asyncio.sleep(TICK_SECONDS)
 
 

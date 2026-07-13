@@ -32,6 +32,27 @@ def stop_order_type(trigger_px: float) -> dict:
     return {"trigger": {"isMarket": True, "triggerPx": trigger_px, "tpsl": "sl"}}
 
 
+def order_response_errors(resp, n: int) -> list[str | None]:
+    """Errores por status de una respuesta BATCH, alineados con las requests.
+
+    Un error a nivel de respuesta (status != ok) aplica a todas; si no, cada
+    status puede traer su propio 'error' sin excepción (mismo gotcha que las
+    órdenes sueltas).
+    """
+    if resp is None:
+        return ["sin respuesta del SDK"] * n
+    if not isinstance(resp, dict):
+        return [None] * n
+    if resp.get("status") not in (None, "ok"):
+        return [str(resp.get("response") or resp)] * n
+    sts = ((resp.get("response") or {}).get("data") or {}).get("statuses") or []
+    out: list[str | None] = []
+    for i in range(n):
+        st = sts[i] if i < len(sts) else None
+        out.append(str(st["error"]) if isinstance(st, dict) and st.get("error") else None)
+    return out
+
+
 def order_response_error(resp) -> str | None:
     """Devuelve el error de una respuesta de orden del SDK, o None si fue bien.
 
@@ -68,6 +89,9 @@ class HLClient:
         base = constants.TESTNET_API_URL if cfg.testnet else constants.MAINNET_API_URL
         self.cfg = cfg
         self.address = cfg.account_address
+        # Acciones L1 gastadas desde el arranque (presupuesto por dirección:
+        # 10k iniciales + 1 por USDC negociado; agotarlo estrangula a 1/10s).
+        self.l1_actions = {"orders": 0, "cancels": 0, "other": 0, "total": 0}
         self.info = Info(base, skip_ws=True)
         self.info.timeout = HTTP_TIMEOUT       # el SDK usa session.post(..., timeout=self.timeout)
         meta = self.info.meta()
@@ -77,6 +101,10 @@ class HLClient:
             wallet = Account.from_key(cfg.secret_key)
             self.exchange = Exchange(wallet, base, account_address=cfg.account_address)
             self.exchange.timeout = HTTP_TIMEOUT
+
+    def _count(self, kind: str, n: int = 1) -> None:
+        self.l1_actions[kind] = self.l1_actions.get(kind, 0) + n
+        self.l1_actions["total"] += n
 
     def mid(self, coin: str) -> float:
         return float(self.info.all_mids()[coin])
@@ -112,14 +140,47 @@ class HLClient:
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
         tif = "Alo" if post_only else "Gtc"
+        self._count("orders")
         return self.exchange.order(coin, is_buy, sz, px, {"limit": {"tif": tif}},
                                    reduce_only=reduce_only)
+
+    def bulk_place_limits(self, coin: str, items: list[dict],
+                          post_only: bool = True) -> dict:
+        """Varios límites del mismo coin en UNA acción del exchange.
+
+        items: [{is_buy, price, size, reduce_only}]. Mismo redondeo y bump de
+        mínimo $10 que place_limit. Un batch de n cuenta como 1 request para el
+        límite por IP (aunque n para el presupuesto por dirección).
+        """
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        szd = self.sz_decimals[coin]
+        reqs = []
+        for it in items:
+            px = round_price(it["price"], szd)
+            sz = round_size(it["size"], szd)
+            if not it.get("reduce_only") and not meets_min_notional(px, sz):
+                scale = 10 ** szd
+                sz = math.ceil((10.0 / px) * scale) / scale
+            reqs.append({"coin": coin, "is_buy": bool(it["is_buy"]), "sz": sz,
+                         "limit_px": px,
+                         "order_type": {"limit": {"tif": "Alo" if post_only else "Gtc"}},
+                         "reduce_only": bool(it.get("reduce_only", False))})
+        self._count("orders", len(reqs))
+        return self.exchange.bulk_orders(reqs)
+
+    def cancel_orders(self, coin: str, oids: list[int]) -> dict:
+        if self.exchange is None:
+            raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("cancels", len(oids))
+        return self.exchange.bulk_cancel([{"coin": coin, "oid": o} for o in oids])
 
     def set_leverage(self, coin: str, leverage: int, is_cross: bool = False) -> dict:
         # Fija el apalancamiento máximo por activo (isolated por defecto) para acotar
         # el riesgo de liquidación de cada posición.
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("other")
         return self.exchange.update_leverage(leverage, coin, is_cross)
 
     def market_open(self, coin: str, is_buy: bool, size: float,
@@ -134,19 +195,22 @@ class HLClient:
             sz = math.ceil((10.0 / mid) * scale) / scale
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("orders")
         return self.exchange.market_open(coin, is_buy, sz, None, slippage)
 
     def market_close(self, coin: str) -> dict:
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("orders")
         return self.exchange.market_close(coin)
 
     def cancel_all(self, coin: str) -> None:
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
-        for o in self.info.open_orders(self.address):
-            if o["coin"] == coin:
-                self.exchange.cancel(coin, o["oid"])
+        oids = [o["oid"] for o in self.info.open_orders(self.address)
+                if o["coin"] == coin]
+        if oids:
+            self.cancel_orders(coin, oids)
 
     def schedule_cancel(self, at_ms: int | None) -> dict:
         # Dead man's switch del exchange: al llegar at_ms HL cancela TODO el reposo de la
@@ -154,11 +218,13 @@ class HLClient:
         # muere o se congela, la escalera del grid deja de llenarse sola sin nadie al mando.
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("other")
         return self.exchange.schedule_cancel(at_ms)
 
     def cancel_order(self, coin: str, oid: int) -> None:
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("cancels")
         self.exchange.cancel(coin, oid)
 
     def open_orders(self, coin: str) -> list[dict]:
@@ -183,6 +249,7 @@ class HLClient:
         sz = round_size(size, szd)
         if self.exchange is None:
             raise RuntimeError("HLClient sin credenciales: no puede operar")
+        self._count("orders")
         resp = self.exchange.order(coin, is_buy, sz, limit, stop_order_type(trig),
                                    reduce_only=reduce_only)
         try:

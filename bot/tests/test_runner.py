@@ -218,6 +218,65 @@ def test_run_tick_writes_heartbeat(tmp_path, monkeypatch):
     assert float((tmp_path / "hb").read_text()) > 0    # latido para el watchdog
 
 
+def test_update_markouts_computes_signed_bps(tmp_path):
+    import time
+    from hlbot.main import update_markouts
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["BTC"], 40.0, mode="testnet")
+    now = time.time()
+    # compra a 100 hace 40s y venta a 100 hace 40s
+    store.record_fill_unique(sid, "t1", int(now - 40), "BTC", "B", "Open Long", 100.0, 0.1, 0.0, 0.0)
+    store.record_fill_unique(sid, "t2", int(now - 40), "BTC", "A", "Open Short", 100.0, 0.1, 0.0, 0.0)
+
+    class _Md:
+        def mid_at(self, coin, ts, tol_s=2.0):
+            return 101.0                        # el precio subió tras el fill
+
+    update_markouts(store, _Md(), sid)
+    fills = store.get_fills(sid)
+    by_side = {f["side"]: f for f in fills}
+    assert abs(by_side["B"]["markout_5s"] - 100.0) < 1e-6    # +100 bps a favor
+    assert abs(by_side["A"]["markout_5s"] + 100.0) < 1e-6    # -100 bps (vendió y subió)
+    assert by_side["B"]["markout_30s"] is not None           # 30s también vencido
+    # segunda pasada: ya no hay pendientes (no recalcula)
+    class _Boom:
+        def mid_at(self, coin, ts, tol_s=2.0):
+            raise AssertionError("no debe consultar fills ya resueltos")
+    update_markouts(store, _Boom(), sid)
+
+
+def test_update_markouts_skips_when_no_history(tmp_path):
+    import time
+    from hlbot.main import update_markouts
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["BTC"], 40.0, mode="testnet")
+    store.record_fill_unique(sid, "t1", int(time.time() - 40), "BTC", "B", "", 100.0, 0.1, 0.0, 0.0)
+
+    class _Md:
+        def mid_at(self, coin, ts, tol_s=2.0):
+            return None                         # hueco del feed
+
+    update_markouts(store, _Md(), sid)
+    assert store.get_fills(sid)[0]["markout_5s"] is None     # queda pendiente, sin inventar
+
+
+def test_funding_cached_between_ticks():
+    from hlbot.main import run_tick
+    from test_session_engine import FakeClient, FakeStore
+    from hlbot.session_engine import SessionEngine
+    from hlbot.models import RiskLimits, SessionConfig
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(SessionConfig(watchlist=["ETH"], capital=40.0,
+                             limits=RiskLimits(10.0, 4, 2.0, 5.0, 20.0),
+                             grid_n=4, grid_range_pct=0.02))
+    counters = {"loop": 0, "ticks": 0}
+    fcache: dict = {}
+    for _ in range(3):
+        run_tick(eng, eng.client, eng.store, {}, {"v": {}}, counters,
+                 None, {}, fcache)
+    assert eng.client.funding_calls == 1        # 3 ticks, 1 sola llamada REST
+
+
 def test_refresh_records_fills_dedup(tmp_path):
     store = Store(str(tmp_path / "t.db")); store.init_schema()
     sid = store.create_session(["BTC"], 40.0, mode="testnet")

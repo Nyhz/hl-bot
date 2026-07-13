@@ -46,15 +46,22 @@ rastrear órdenes localmente vía WS orderUpdates (F3). El presupuesto por DIREC
   mínima para señal, toxicity_cooldown_s=30.
 - Test de paridad: sin campos micro (backtest) el grid v2 = grid v1.
 
-### F3 — Ejecución pro: batch, contador de acciones, markouts, tick 1s
-- Reconciliador → `bulk_orders`/`bulk_cancel` (1 request IP-wise por batch).
-- Contador de acciones L1 en HLClient (gastadas por tipo; ganadas ≈ volumen USDC
-  acumulado de fills) → expuesto en /state; base del tile del dashboard.
-- **Markouts**: ring buffer de precios 1s por moneda (de bbo); al registrar cada fill,
-  job diferido calcula mid a +5s/+30s/+120s → columnas nuevas en fills (migración) +
-  endpoint resumen por sesión (bps medios por horizonte, por side y por estrategia).
-- Rastreo local de órdenes vía WS `orderUpdates` → open_orders REST solo como
-  resync periódico → TICK_SECONDS a 1s (stops/toxicity reaccionan rápido).
+### F3 — Ejecución pro: batch, contador de acciones, markouts
+- Reconciliador → `bulk_place_limits`/`cancel_orders` (1 request IP-wise por batch).
+- Contador de acciones L1 en HLClient (gastadas por tipo) → `/state.l1_actions`;
+  base del tile del dashboard.
+- **Markouts**: ring buffer de mids (180s, muestreo ≥0.5s) en marketdata; job por
+  tick calcula bps firmados a favor del fill a +5s/+30s/+120s → columnas en fills
+  (migración) + endpoint `GET /markouts`. Fills fuera de la ventana del ring quedan
+  NULL (sin inventar datos).
+- Funding cacheado 60s (metaAndAssetCtxs pesa 20; cambiaba poco y se pedía por tick).
+
+### F3b — Rastreo local de órdenes + tick 1s (SEPARADA de F3 a propósito)
+- WS `orderUpdates` → estado local de órdenes (seed por REST + updates), resync
+  periódico; solo entonces bajar TICK_SECONDS a 1s (hoy open_orders REST pesa 20
+  por moneda y tick: a 1s reventaría el límite de 1200/min).
+- El estado local de órdenes tiene carreras sutiles (orden colocada entre seed y
+  subscribe): merece fase propia con verificación larga en testnet.
 
 ### F3.5 — Dashboard: microestructura visible
 - Panel de markouts (curva bps vs horizonte — EL número de un MM).

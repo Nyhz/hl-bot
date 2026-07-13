@@ -60,3 +60,22 @@ def test_order_response_error_accepts_ok_responses():
 def test_order_response_error_err_status():
     from hlbot.hl_client import order_response_error
     assert order_response_error({"status": "err", "response": "rate limited"}) is not None
+
+
+def test_order_response_errors_batch_alignment():
+    from hlbot.hl_client import order_response_errors
+    resp = {"status": "ok", "response": {"data": {"statuses": [
+        {"resting": {"oid": 1}},
+        {"error": "Post only order would have immediately matched"},
+        {"resting": {"oid": 2}},
+    ]}}}
+    errs = order_response_errors(resp, 3)
+    assert errs[0] is None and errs[2] is None
+    assert "immediately matched" in errs[1]
+
+
+def test_order_response_errors_toplevel_error_applies_to_all():
+    from hlbot.hl_client import order_response_errors
+    errs = order_response_errors({"status": "err", "response": "rate limited"}, 2)
+    assert errs == ["rate limited", "rate limited"]
+    assert order_response_errors(None, 2) == ["sin respuesta del SDK"] * 2

@@ -46,6 +46,20 @@ class FakeClient:
         self.scheduled_cancels.append(at_ms); return {"status": "ok"}
     def all_open_orders(self): return list(self.resting)
     def frontend_open_orders(self): return list(self.frontend_orders)
+    def bulk_place_limits(self, coin, items, post_only=True):
+        for it in items:
+            self._next_oid += 1
+            self.orders.append((coin, it["is_buy"], it["price"], it["size"],
+                                bool(it.get("reduce_only", False)), post_only))
+            self.resting.append({"coin": coin, "limitPx": it["price"],
+                                 "sz": it["size"], "oid": self._next_oid})
+        return {"status": "ok"}
+    def cancel_orders(self, coin, oids):
+        self.canceled_oids.extend((coin, o) for o in oids)
+        return {"status": "ok"}
+    def funding_rates(self):
+        self.funding_calls = getattr(self, "funding_calls", 0) + 1
+        return {}
 
 class FakeStore:
     def __init__(self):
@@ -808,6 +822,37 @@ def test_rehydrate_keeps_loss_limit_continuity():
     eng.rehydrate(1, 1234, payload)
     eng.tick(_flat_ms())
     assert eng.paused is True and eng.state == SessionState.CLOSING
+
+
+def test_reconcile_batch_records_per_order_errors():
+    # el batch devuelve statuses por orden: los rechazos dejan risk_event y no
+    # activan la sesión en falso
+    class _RejBulk(FakeClient):
+        def bulk_place_limits(self, coin, items, post_only=True):
+            super().bulk_place_limits(coin, items, post_only)
+            return {"status": "ok", "response": {"data": {"statuses": [
+                {"error": "Post only order would have immediately matched"}
+            ] * len(items)}}}
+    client = _RejBulk()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())
+    assert any(k == "orden_rechazada" for k, _ in store.risk_events)
+    assert eng.state == SessionState.SCANNING            # nada colocado de verdad
+
+
+def test_reconcile_cancels_stale_in_single_batch():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())                       # escalera inicial
+    n_orders_before = len(client.orders)
+    moved = _flat_ms()
+    moved["ETH"].mid = 3000.0 * 1.01
+    eng.tick(moved)
+    assert client.canceled_oids                # stale cancelados (vía batch)
+    assert len(client.orders) > n_orders_before  # y recolocados
 
 
 def test_toxicity_gate_pulls_quotes_and_cools_down():
