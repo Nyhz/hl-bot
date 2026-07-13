@@ -1,4 +1,4 @@
-import type { Candle, SessionSummary, GlobalStats, SessionDetail, TapeEvent, BacktestParams, BacktestResult } from "./types";
+import type { Candle, SessionSummary, GlobalStats, SessionDetail, TapeEvent, BacktestParams, BacktestResult, MarkoutRow } from "./types";
 
 const BASE = () => process.env.NEXT_PUBLIC_BOT_HTTP ?? "http://localhost:3300";
 
@@ -19,6 +19,8 @@ export const api = {
     get<SessionSummary[]>(`/sessions${mode ? `?mode=${mode}` : ""}`),
   getSession: (id: number) => get<SessionDetail>(`/sessions/${id}`),
   getStatsGlobal: () => get<GlobalStats>(`/stats/global`),
+  getMarkouts: (sessionId?: number | null) =>
+    get<MarkoutRow[]>(`/markouts${sessionId != null ? `?session_id=${sessionId}` : ""}`),
   runBacktest: async (params: BacktestParams): Promise<BacktestResult> => {
     const res = await fetch(`${BASE()}/backtest`, {
       method: "POST", headers: { "Content-Type": "application/json" },

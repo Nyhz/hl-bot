@@ -6,6 +6,16 @@ export interface Trigger { coin: string; level: number; side: string; action: st
 export interface CoinView {
   mid: number; mode: "grid" | "trend"; funding: number | null;
   triggers: Trigger[]; conditions: Condition[]; armed: boolean;
+  // microestructura (F3.5) — null/ausente sin WebSocket fresco en el bot
+  bbo?: [number | null, number | null];
+  microprice?: number | null;
+  sigma?: number | null;
+  flow_ratio?: number | null;
+}
+export interface L1Actions { orders: number; cancels: number; other: number; total: number; }
+export interface MarkoutRow {
+  coin: string; n: number;
+  m5: number | null; m30: number | null; m120: number | null;
 }
 export interface Position {
   coin: string; side: string; leverage: number | null; notional: number;
@@ -25,6 +35,7 @@ export interface Snapshot {
   session_id: number | null; session_started_at: number | null;
   watchlist: string[]; coins: Record<string, CoinView>;
   account: Account; positions: Position[]; tape_recent: TapeEvent[];
+  l1_actions?: L1Actions;
 }
 export interface Candle { time: number; open: number; high: number; low: number; close: number; }
 export interface SessionSummary {
