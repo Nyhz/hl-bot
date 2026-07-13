@@ -13,6 +13,8 @@ from hlbot.risk import RiskManager
 from hlbot.indicators import atr
 from hlbot.hl_client import order_response_error, order_response_errors
 
+PNL_SNAPSHOT_EVERY_TICKS = 12   # ~1/min a 5s/tick
+
 
 class SessionEngine:
     def __init__(self, client, store):
@@ -39,6 +41,7 @@ class SessionEngine:
         # transitorio (≤cooldown): no se persiste; tras reiniciar se re-evalúa.
         self.toxic_until: dict[str, float] = {}
         self._net_delta = 0.0   # Σ notional firmado entre monedas (se recalcula por tick)
+        self._tick_count = 0
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
@@ -56,6 +59,9 @@ class SessionEngine:
         testnet = getattr(getattr(self.client, "cfg", None), "testnet", True)
         self.session_id = self.store.create_session(
             cfg.watchlist, cfg.capital, mode="testnet" if testnet else "mainnet")
+        # Config COMPLETA e inmutable del lanzamiento: sin esto un test run no se
+        # puede analizar (sessions solo guardaba watchlist+capital).
+        self.store.set_session_config(self.session_id, json.dumps(to_dict(cfg)))
         self.grids = {}
         self.trends = {}
         for coin in cfg.watchlist:
@@ -365,16 +371,30 @@ class SessionEngine:
                     self.store.record_risk_event(self.session_id, "stop_error", str(e))
             self.stop_levels.pop(c, None)
             self.stop_oids.pop(c, None)
+        micro_rows: list[dict] = []
         for coin, ms in market_states.items():
             if coin not in self.grids:
                 continue
             ms.inventory = pos_sizes.get(coin, 0.0)
+            micro_rows.append({
+                "ts": int(time.time()), "coin": coin, "mid": ms.mid,
+                "best_bid": ms.best_bid, "best_ask": ms.best_ask,
+                "bid_sz": ms.bid_sz, "ask_sz": ms.ask_sz,
+                "microprice": ms.microprice, "sigma_px": ms.sigma_px,
+                "flow_usd": ms.flow_usd, "flow_total_usd": ms.flow_total_usd,
+                "flow_ratio": ms.flow_ratio, "funding": ms.funding_rate,
+                "inventory": ms.inventory,
+                "toxic": 1 if time.time() < self.toxic_until.get(coin, 0.0) else 0,
+            })
             # #4: al entrar en régimen de tendencia, cancelar una vez el grid en reposo
             # (deja de mezclar inventario grid con la entrada de tendencia).
             trending = self.trends[coin].is_trending(ms)
             if trending and coin not in self.trend_regime and coin not in self.trend_open:
                 self.client.cancel_all(coin)
                 self.trend_regime.add(coin)
+                self.store.record_decision(
+                    self.session_id, coin, ActionType.CANCEL.value,
+                    "régimen de tendencia: grid retirado")
             elif not trending:
                 self.trend_regime.discard(coin)
             decisions = self._decisions_for(ms)
@@ -393,6 +413,17 @@ class SessionEngine:
                     continue
                 self._apply(coin, ms, d, n_open, equity, gross,
                             pos_notionals.get(coin, 0.0))
+        # Series para el análisis de test runs: microestructura por tick y, cada
+        # ~minuto, equity con exposición (unrealized/gross/net_delta/L1).
+        self._tick_count += 1
+        self.store.record_micro_batch(self.session_id, micro_rows)
+        if self._tick_count % PNL_SNAPSHOT_EVERY_TICKS == 0:
+            unrealized = sum(float((p.get("position", {}) or {}).get("unrealizedPnl", 0) or 0)
+                             for p in asset_positions)
+            self.store.record_pnl_snapshot(
+                self.session_id, equity, unrealized=unrealized, gross=gross,
+                net_delta=self._net_delta, open_count=n_open,
+                l1_total=getattr(self.client, "l1_actions", {}).get("total"))
         if self.state == SessionState.CLOSING:
             if n_open == 0:
                 if self.session_id is not None:
@@ -468,6 +499,9 @@ class SessionEngine:
                                  for dp, _ in desired)]
             if stale:
                 self.client.cancel_orders(coin, stale)
+                self.store.record_decision(
+                    self.session_id, coin, ActionType.CANCEL.value,
+                    f"reconcile: {len(stale)} rungs stale retirados")
             # 2) colocar las deseadas que falten, también en UN batch
             rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
             to_place = [d for dp, d in desired

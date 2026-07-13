@@ -165,3 +165,41 @@ def test_open_sessions_newest_first(tmp_path):
     new = store.create_session(["ETH"], 40.0, mode="testnet")
     rows = store.open_sessions("testnet")
     assert [r["id"] for r in rows] == [new, old]
+
+
+def test_session_config_json_roundtrip(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0, mode="testnet")
+    store.set_session_config(sid, '{"grid_n": 4}')
+    assert store.get_session(sid)["config_json"] == '{"grid_n": 4}'
+
+
+def test_micro_batch_roundtrip(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0, mode="testnet")
+    store.record_micro_batch(sid, [
+        {"ts": 100, "coin": "ETH", "mid": 3000.0, "microprice": 3001.0,
+         "sigma_px": 2.0, "flow_ratio": 0.3, "inventory": 0.004, "toxic": 0},
+        {"ts": 100, "coin": "BTC", "mid": 61000.0, "toxic": 1},
+    ])
+    rows = store.get_micro(sid)
+    assert len(rows) == 2
+    eth = store.get_micro(sid, coin="ETH")
+    assert len(eth) == 1 and eth[0]["microprice"] == 3001.0
+    assert eth[0]["best_bid"] is None                     # columnas ausentes -> NULL
+    assert store.get_micro(sid, coin="BTC")[0]["toxic"] == 1
+    store.record_micro_batch(sid, [])                     # batch vacío: no-op
+
+
+def test_pnl_snapshot_rich_columns(tmp_path):
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["ETH"], 40.0, mode="testnet")
+    store.record_pnl_snapshot(sid, 40.5, unrealized=0.5, gross=12.0,
+                              net_delta=-12.0, open_count=1, l1_total=77)
+    with store._conn() as conn:
+        row = dict(conn.execute("SELECT * FROM pnl_snapshots WHERE session_id=?",
+                                (sid,)).fetchone())
+    assert row["total_pnl"] == 40.5 and row["unrealized"] == 0.5
+    assert row["net_delta"] == -12.0 and row["l1_total"] == 77
+    # el getter de la curva de equity sigue funcionando igual
+    assert store.get_pnl_snapshots(sid)[0]["total_pnl"] == 40.5

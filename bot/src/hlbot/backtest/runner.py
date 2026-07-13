@@ -11,6 +11,7 @@ SNAPSHOT_EVERY = 5   # velas
 class CaptureStore:
     def __init__(self):
         self.decisions: list[dict] = []
+        self.micro: list[dict] = []
         self.current_ts = 0
 
     def create_session(self, watchlist, capital, mode="backtest"):
@@ -26,8 +27,17 @@ class CaptureStore:
     def record_risk_event(self, sid, kind, detail):
         pass
 
-    def record_pnl_snapshot(self, sid, pnl):
+    def record_pnl_snapshot(self, sid, pnl, **extras):
         pass
+
+    def set_session_config(self, sid, config_json):
+        pass
+
+    def record_micro_batch(self, sid, rows):
+        self.micro.extend(rows)
+
+    def save_runtime(self, sid, payload):
+        pass   # el backtest es efímero: nada que rehidratar
 
 
 def run_backtest(coin, candles, funding_rows, cfg, sz_decimals) -> dict:

@@ -21,7 +21,6 @@ FUNDING_REFRESH_S = 60.0               # funding cambia lento; metaAndAssetCtxs 
 FLOW_READ_WINDOW_S = 15.0              # ventana de lectura del tape para flow_ratio
 MARKOUT_HORIZONS_S = (5, 30, 120)      # bps a favor del fill a +5s/+30s/+120s
 TICK_SECONDS = 5
-PNL_SNAPSHOT_EVERY = 12                 # ~cada minuto a 5s/tick
 ACCOUNT_EXTRAS_EVERY = 6               # cada cuántos ticks refrescar fills/funding (más pesados)
 DMS_EVERY_TICKS = 12                   # re-armar el dead man's switch cada ~60s
 DMS_HORIZON_MS = 180_000               # sin re-arme en 3 min, HL cancela todo el reposo
@@ -301,10 +300,8 @@ def run_tick(engine, client, store, shared, cache_holder, counters,
                 if refreshed:
                     persist_candles(store, coin, raw)
             if states:
-                engine.tick(states)
+                engine.tick(states)   # graba micro por tick y pnl rica cada ~minuto
                 counters["ticks"] += 1
-                if counters["ticks"] % PNL_SNAPSHOT_EVERY == 0 and engine.session_id is not None:
-                    store.record_pnl_snapshot(engine.session_id, engine._account_value())
             # Refresco SIEMPRE (haya o no sesión): si solo se refrescara con cfg,
             # tras kill/close la caché quedaría congelada con las posiciones viejas
             # y el dashboard las pintaría como abiertas indefinidamente.
@@ -312,6 +309,13 @@ def run_tick(engine, client, store, shared, cache_holder, counters,
                 client, engine, cache_holder["v"],
                 fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
             update_markouts(store, md, engine.session_id)
+            # Reconexiones del feed WS -> queryables en el análisis del run
+            rec = getattr(md, "reconnects", 0) if md is not None else 0
+            if rec != counters.get("ws_reconnects", 0):
+                counters["ws_reconnects"] = rec
+                if engine.session_id is not None:
+                    store.record_risk_event(engine.session_id, "ws_reconnect",
+                                            f"reconexiones acumuladas: {rec}")
             write_heartbeat()
         except Exception as e:  # red caída, BD, etc.: log y seguir
             print(f"[trade_loop] error: {e}", flush=True)

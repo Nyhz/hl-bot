@@ -64,13 +64,16 @@ class FakeClient:
 class FakeStore:
     def __init__(self):
         self.decisions = []; self.sid = 1; self.ended = []; self.risk_events = []
-        self.runtime = None
+        self.runtime = None; self.config_json = None
+        self.micro = []; self.pnl_snapshots = []
     def create_session(self, watchlist, capital, mode="testnet"): return self.sid
     def end_session(self, sid): self.ended.append(sid)
     def record_decision(self, sid, coin, action, reason): self.decisions.append((coin, action, reason))
     def record_risk_event(self, sid, kind, detail): self.risk_events.append((kind, detail))
-    def record_pnl_snapshot(self, sid, pnl): pass
+    def record_pnl_snapshot(self, sid, pnl, **extras): self.pnl_snapshots.append((pnl, extras))
     def save_runtime(self, sid, payload): self.runtime = payload
+    def set_session_config(self, sid, config_json): self.config_json = config_json
+    def record_micro_batch(self, sid, rows): self.micro.extend(rows)
 
 def _cfg():
     limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
@@ -972,3 +975,64 @@ def test_net_delta_cap_allows_reduction_when_already_over():
     eng.trends["ETH"] = _NoTrend()
     eng.tick(_flat_ms())
     assert any(o[1] is True for o in client.orders)     # el BUY reductor pasó
+
+
+# ---------- persistencia enriquecida para análisis de test runs ----------
+
+def test_launch_persists_full_config_json():
+    import json
+    store = FakeStore()
+    eng = SessionEngine(FakeClient(), store)
+    eng.launch(_cfg())
+    cfg = json.loads(store.config_json)
+    assert cfg["watchlist"] == ["ETH"] and cfg["grid_n"] == 4
+    assert cfg["limits"]["max_net_delta"] == 1e9          # limits completos
+    assert "microprice_weight" in cfg                     # params de micro incluidos
+
+
+def test_tick_records_micro_snapshot_per_coin():
+    store = FakeStore()
+    eng = SessionEngine(FakeClient(), store)
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    ms["ETH"].microprice = 3001.5
+    ms["ETH"].flow_ratio = 0.4
+    ms["ETH"].sigma_px = 2.2
+    eng.tick(ms)
+    assert len(store.micro) == 1
+    row = store.micro[0]
+    assert row["coin"] == "ETH" and row["mid"] == 3000.0
+    assert row["microprice"] == 3001.5 and row["flow_ratio"] == 0.4
+    assert row["toxic"] == 0 and row["inventory"] == 0.0
+    eng.tick(_flat_ms())
+    assert len(store.micro) == 2                          # una fila por tick y moneda
+
+
+def test_rich_pnl_snapshot_every_n_ticks():
+    from hlbot.session_engine import PNL_SNAPSHOT_EVERY_TICKS
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.004",
+                                      "positionValue": "12", "unrealizedPnl": "0.5"}}]
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    for _ in range(PNL_SNAPSHOT_EVERY_TICKS):
+        eng.tick(_flat_ms())
+    assert len(store.pnl_snapshots) == 1                  # una por minuto de ticks
+    pnl, extras = store.pnl_snapshots[0]
+    assert pnl == 40.0
+    assert extras["unrealized"] == 0.5
+    assert extras["gross"] == 12.0 and extras["net_delta"] == 12.0
+    assert extras["open_count"] == 1
+
+
+def test_reconcile_stale_cancel_leaves_tape_trace():
+    client = FakeClient()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    eng.tick(_flat_ms())                                  # escalera inicial
+    moved = _flat_ms()
+    moved["ETH"].mid = 3000.0 * 1.01                      # rungs viejos -> stale
+    eng.tick(moved)
+    assert any(a == "cancel" and "reconcile" in r for _, a, r in store.decisions)

@@ -56,6 +56,17 @@ CREATE TABLE IF NOT EXISTS market_candles (
     open REAL, high REAL, low REAL, close REAL, volume REAL,
     PRIMARY KEY (coin, interval, t)
 );
+CREATE TABLE IF NOT EXISTS micro_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    coin TEXT NOT NULL,
+    mid REAL, best_bid REAL, best_ask REAL, bid_sz REAL, ask_sz REAL,
+    microprice REAL, sigma_px REAL, flow_usd REAL, flow_total_usd REAL,
+    flow_ratio REAL, funding REAL, inventory REAL, toxic INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_micro_session_ts
+    ON micro_snapshots(session_id, ts);
 CREATE TABLE IF NOT EXISTS session_runtime (
     session_id INTEGER PRIMARY KEY,
     updated_at INTEGER NOT NULL,
@@ -82,6 +93,14 @@ MIGRATIONS = [
     "ALTER TABLE fills ADD COLUMN markout_5s REAL",
     "ALTER TABLE fills ADD COLUMN markout_30s REAL",
     "ALTER TABLE fills ADD COLUMN markout_120s REAL",
+    # Config completa e inmutable de lanzamiento (sessions solo tenía watchlist+capital)
+    "ALTER TABLE sessions ADD COLUMN config_json TEXT",
+    # Series de exposición/churn junto a la equity (análisis de test runs)
+    "ALTER TABLE pnl_snapshots ADD COLUMN unrealized REAL",
+    "ALTER TABLE pnl_snapshots ADD COLUMN gross REAL",
+    "ALTER TABLE pnl_snapshots ADD COLUMN net_delta REAL",
+    "ALTER TABLE pnl_snapshots ADD COLUMN open_count INTEGER",
+    "ALTER TABLE pnl_snapshots ADD COLUMN l1_total INTEGER",
 ]
 
 
@@ -164,12 +183,53 @@ class Store:
                 (session_id, int(time.time()), coin, side, price, size, fee),
             )
 
-    def record_pnl_snapshot(self, session_id: int, total_pnl: float) -> None:
+    def record_pnl_snapshot(self, session_id: int, total_pnl: float,
+                            unrealized: float | None = None,
+                            gross: float | None = None,
+                            net_delta: float | None = None,
+                            open_count: int | None = None,
+                            l1_total: int | None = None) -> None:
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO pnl_snapshots (session_id, ts, total_pnl) VALUES (?, ?, ?)",
-                (session_id, int(time.time()), total_pnl),
+                "INSERT INTO pnl_snapshots (session_id, ts, total_pnl, unrealized, "
+                "gross, net_delta, open_count, l1_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, int(time.time()), total_pnl, unrealized,
+                 gross, net_delta, open_count, l1_total),
             )
+
+    def set_session_config(self, session_id: int, config_json: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE sessions SET config_json=? WHERE id=?",
+                         (config_json, session_id))
+
+    MICRO_COLS = ("ts", "coin", "mid", "best_bid", "best_ask", "bid_sz", "ask_sz",
+                  "microprice", "sigma_px", "flow_usd", "flow_total_usd",
+                  "flow_ratio", "funding", "inventory", "toxic")
+
+    def record_micro_batch(self, session_id: int, rows: list[dict]) -> None:
+        # Serie de microestructura por tick y moneda: lo que hace analizable un
+        # test run a posteriori (reserva A-S reconstruible, contexto de cada fill).
+        if not rows:
+            return
+        cols = ", ".join(self.MICRO_COLS)
+        ph = ", ".join("?" * (len(self.MICRO_COLS) + 1))
+        with self._conn() as conn:
+            conn.executemany(
+                f"INSERT INTO micro_snapshots (session_id, {cols}) VALUES ({ph})",
+                [(session_id, *[r.get(c) for c in self.MICRO_COLS]) for r in rows])
+
+    def get_micro(self, session_id: int, coin: str | None = None,
+                  limit: int = 20000) -> list[dict]:
+        with self._conn() as conn:
+            if coin:
+                rows = conn.execute(
+                    "SELECT * FROM micro_snapshots WHERE session_id=? AND coin=? "
+                    "ORDER BY id DESC LIMIT ?", (session_id, coin, limit)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM micro_snapshots WHERE session_id=? "
+                    "ORDER BY id DESC LIMIT ?", (session_id, limit)).fetchall()
+            return [dict(r) for r in reversed(rows)]
 
     def record_risk_event(self, session_id: int, kind: str, detail: str) -> None:
         with self._conn() as conn:

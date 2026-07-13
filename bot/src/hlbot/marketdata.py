@@ -43,6 +43,7 @@ class MarketData:
         self._last_msg_ts = 0.0
         self._last_restart = 0.0
         self._ws: WebsocketManager | None = None
+        self.reconnects = 0   # reconexiones acumuladas (salud del feed, queryable)
 
     # ---------- conexión ----------
 
@@ -80,6 +81,7 @@ class MarketData:
         self.stop()
         try:
             self._connect()
+            self.reconnects += 1
         except Exception as e:
             self._last_restart = now
             print(f"[marketdata] reconexión fallida: {e}", flush=True)
