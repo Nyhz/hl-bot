@@ -35,6 +35,9 @@ class SessionEngine:
         self.stop_oids: dict[str, int] = {}
         self.trend_confirmed: set[str] = set()
         self.trend_regime: set[str] = set()
+        # coin -> epoch hasta el que el grid NO cotiza (toxicity gate). Estado
+        # transitorio (≤cooldown): no se persiste; tras reiniciar se re-evalúa.
+        self.toxic_until: dict[str, float] = {}
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
@@ -74,6 +77,7 @@ class SessionEngine:
         self.stop_oids = {}
         self.trend_confirmed = set()
         self.trend_regime = set()
+        self.toxic_until = {}
         self.paused = False
         self.state = SessionState.SCANNING
         self._save_runtime()
@@ -253,6 +257,7 @@ class SessionEngine:
         self.stop_oids = {}
         self.trend_confirmed = set()
         self.trend_regime = set()
+        self.toxic_until = {}
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
@@ -361,8 +366,9 @@ class SessionEngine:
             grid_active = (coin not in self.trend_open
                            and not self.trends[coin].is_trending(ms))
             if grid_active and self.state != SessionState.CLOSING:
-                self._reconcile_grid(coin, ms, decisions, n_open, equity, gross,
-                                     pos_notionals.get(coin, 0.0))
+                if not self._toxicity_gate(coin, ms):
+                    self._reconcile_grid(coin, ms, decisions, n_open, equity, gross,
+                                         pos_notionals.get(coin, 0.0))
             for d in decisions:
                 if d.action == ActionType.PLACE_LIMIT and not d.reduce_only:
                     continue  # los PLACE_LIMIT de grid los gestiona _reconcile_grid
@@ -380,6 +386,29 @@ class SessionEngine:
             else:
                 self._force_close_positions(asset_positions)
         self._save_runtime()   # snapshot por tick (tras _reset es no-op)
+
+    def _toxicity_gate(self, coin: str, ms: MarketState) -> bool:
+        """True si el grid debe abstenerse de cotizar este tick (flujo tóxico).
+
+        Al dispararse retira el reposo del grid una vez (solo se llama con
+        grid_active, así que nunca toca el trailing stop de una tendencia) y
+        mantiene la retirada durante el cooldown.
+        """
+        now = time.time()
+        if now < self.toxic_until.get(coin, 0.0):
+            return True
+        if not self.grids[coin].too_toxic(ms):
+            return False
+        self.toxic_until[coin] = now + self.cfg.toxicity_cooldown_s
+        try:
+            self.client.cancel_all(coin)
+        except Exception as e:
+            self.store.record_risk_event(self.session_id, "toxicity", str(e))
+        self.store.record_decision(
+            self.session_id, coin, ActionType.CANCEL.value,
+            f"toxicity gate: flow_ratio {ms.flow_ratio:+.2f} -> "
+            f"retirada {int(self.cfg.toxicity_cooldown_s)}s")
+        return True
 
     def _force_close_positions(self, asset_positions: list) -> None:
         # Cierre ACTIVO: el grid no tiene salida propia (solo coloca rungs), así que

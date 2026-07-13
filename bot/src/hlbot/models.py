@@ -49,6 +49,7 @@ class MarketState:
     microprice: float | None = None
     sigma_px: float | None = None       # vol realizada proyectada, en unidades de precio
     flow_usd: float | None = None       # USD firmado del tape (ventana corta)
+    flow_total_usd: float | None = None  # USD total del tape en la misma ventana
     flow_ratio: float | None = None     # firmado/total en [-1, 1]; None sin volumen
 
 
@@ -112,6 +113,13 @@ class SessionConfig:
     funding_tilt: float = 0.3
     funding_min: float = 0.00005
     ema_sep_frac: float = 0.001
+    # Microestructura (grid A-S v2). Solo actúan con WebSocket fresco; sin él
+    # (backtest, WS caído) el grid degrada exactamente al comportamiento v1.
+    microprice_weight: float = 0.3       # peso del microprice en el fair value
+    ofi_weight: float = 0.5              # término de order-flow en la reserva (× sigma)
+    toxicity_flow_ratio: float = 0.7     # |flow_ratio| que dispara la retirada
+    toxicity_min_usd: float = 20000.0    # volumen mínimo en ventana para fiarse de la señal
+    toxicity_cooldown_s: float = 30.0    # cuánto tiempo retirarse tras dispararse
 
 
 @dataclass

@@ -613,6 +613,7 @@ def test_grid_exit_rung_allowed_at_coin_cap():
                              price=3010.0, size=0.005, reason="rung de salida")]
         def half_spread(self, ms, sigma): return 1.0
         def _sigma(self, ms): return 1.0
+        def too_toxic(self, ms): return False
         def armed_triggers(self, ms): return []
         def conditions(self, ms): return []
 
@@ -807,6 +808,40 @@ def test_rehydrate_keeps_loss_limit_continuity():
     eng.rehydrate(1, 1234, payload)
     eng.tick(_flat_ms())
     assert eng.paused is True and eng.state == SessionState.CLOSING
+
+
+def test_toxicity_gate_pulls_quotes_and_cools_down():
+    # flujo agresivo unidireccional -> retirar reposo del grid y no cotizar
+    # durante el cooldown; al expirar, cotización normal
+    client = FakeClient()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    ms["ETH"].flow_ratio = 0.9
+    ms["ETH"].flow_total_usd = 100000.0
+    eng.tick(ms)
+    assert "ETH" in client.canceled                      # reposo retirado
+    assert client.orders == []                           # sin cotizar
+    assert eng.toxic_until.get("ETH", 0) > 0
+    assert any(a == "cancel" and "toxicity" in r for _, a, r in store.decisions)
+    eng.tick(_flat_ms())                                 # tape ya limpio PERO cooldown vivo
+    assert client.orders == []
+    eng.toxic_until["ETH"] = 0.0                         # cooldown expirado
+    eng.tick(_flat_ms())
+    assert len(client.orders) > 0                        # vuelve a cotizar
+
+
+def test_toxicity_gate_ignores_low_volume_noise():
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    ms["ETH"].flow_ratio = 0.95
+    ms["ETH"].flow_total_usd = 500.0                     # calderilla: no es señal
+    eng.tick(ms)
+    assert len(client.orders) > 0                        # cotiza normal
+    assert eng.toxic_until.get("ETH") is None
 
 
 def test_engine_has_lock_and_is_free():

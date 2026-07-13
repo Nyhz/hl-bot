@@ -18,12 +18,33 @@ class GridStrategy:
         self.anchor = mid
 
     def _sigma(self, ms: MarketState) -> float:
+        # Vol realizada del WS si está fresca (reacciona en segundos); ATR de
+        # velas 1m como fallback (backtest / WS caído) — comportamiento v1.
+        if ms.sigma_px is not None and ms.sigma_px > 0:
+            return ms.sigma_px
         if len(ms.candles) < self.cfg.atr_period + 1:
             return 0.0
         closes = [c.close for c in ms.candles]
         highs = [c.high for c in ms.candles]
         lows = [c.low for c in ms.candles]
         return atr(highs, lows, closes, self.cfg.atr_period)[-1]
+
+    def _fair(self, ms: MarketState) -> float:
+        # Fair value = blend mid/microprice: el microprice anticipa hacia dónde
+        # empuja el desequilibrio del BBO. Sin WS -> mid (v1).
+        if ms.microprice is None:
+            return ms.mid
+        w = self.cfg.microprice_weight
+        return (1.0 - w) * ms.mid + w * ms.microprice
+
+    def too_toxic(self, ms: MarketState) -> bool:
+        # Flujo agresivo unidireccional con volumen suficiente: mejor retirarse
+        # que ser la liquidez contra la que corre el mercado.
+        if ms.flow_ratio is None or ms.flow_total_usd is None:
+            return False
+        if ms.flow_total_usd < self.cfg.toxicity_min_usd:
+            return False
+        return abs(ms.flow_ratio) > self.cfg.toxicity_flow_ratio
 
     def _phi_target(self, ms: MarketState) -> float:
         # Fracción objetivo de inventario (de max_coin_notional) según funding.
@@ -40,7 +61,12 @@ class GridStrategy:
         q_notional = ms.inventory * ms.mid
         phi = max(-1.0, min(1.0, q_notional / cap)) if cap > 0 else 0.0
         e = phi - self._phi_target(ms)
-        return ms.mid - e * self.cfg.skew_strength * sigma
+        res = self._fair(ms) - e * self.cfg.skew_strength * sigma
+        # Término OFI: flujo agresivo comprador sube la reserva (no vender barato
+        # a un mercado que empuja); vendedor la baja. Sin tape -> 0 (v1).
+        if ms.flow_ratio is not None:
+            res += self.cfg.ofi_weight * ms.flow_ratio * sigma
+        return res
 
     def half_spread(self, ms: MarketState, sigma: float) -> float:
         return max(self.cfg.min_spread_frac * ms.mid, self.cfg.spread_vol_mult * sigma)

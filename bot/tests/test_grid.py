@@ -63,3 +63,64 @@ def test_evaluate_emits_only_place_limit_rungs():
     ms = _ms(inventory=0.0)
     ds = g.evaluate(ms)
     assert ds and all(d.action == ActionType.PLACE_LIMIT for d in ds)  # grid no cierra por precio
+
+
+# ---------- A-S v2: microestructura (F2) ----------
+
+def test_v1_parity_without_microstructure():
+    # sin campos micro (backtest / WS caído) el grid v2 = v1 exacto:
+    # fair=mid, sigma=ATR, sin término OFI
+    g = GridStrategy(_cfg())
+    ms = _ms(inventory=0.005)
+    assert ms.microprice is None and ms.flow_ratio is None
+    sigma = g._sigma(ms)
+    cap = g.cfg.limits.max_coin_notional
+    phi = max(-1.0, min(1.0, ms.inventory * ms.mid / cap))
+    expected = ms.mid - phi * g.cfg.skew_strength * sigma
+    assert abs(g.reservation_price(ms, sigma) - expected) < 1e-9
+
+
+def test_fair_blends_mid_and_microprice():
+    g = GridStrategy(_cfg())
+    ms = _ms()
+    ms.microprice = 3010.0                     # bbo cargado hacia arriba
+    fair = g._fair(ms)
+    assert 3000.0 < fair < 3010.0
+    assert abs(fair - (0.7 * 3000.0 + 0.3 * 3010.0)) < 1e-9   # w=0.3 default
+
+
+def test_sigma_prefers_realized_over_atr():
+    g = GridStrategy(_cfg())
+    ms = _ms(vol=10.0)                          # ATR ~ 10-20
+    ms.sigma_px = 3.5
+    assert g._sigma(ms) == 3.5
+    ms.sigma_px = None
+    assert g._sigma(ms) > 3.5                   # fallback ATR
+
+
+def test_ofi_shifts_reservation_with_flow():
+    g = GridStrategy(_cfg())
+    base = _ms(inventory=0.0)
+    sigma = g._sigma(base)
+    res0 = g.reservation_price(base, sigma)
+    buy = _ms(inventory=0.0)
+    buy.flow_ratio = 0.8                        # presión compradora
+    assert g.reservation_price(buy, sigma) > res0
+    sell = _ms(inventory=0.0)
+    sell.flow_ratio = -0.8
+    assert g.reservation_price(sell, sigma) < res0
+
+
+def test_too_toxic_requires_ratio_and_volume():
+    g = GridStrategy(_cfg())
+    ms = _ms()
+    assert g.too_toxic(ms) is False             # sin tape
+    ms.flow_ratio = 0.9
+    ms.flow_total_usd = 1000.0                  # volumen de juguete: ignorar
+    assert g.too_toxic(ms) is False
+    ms.flow_total_usd = 50000.0
+    assert g.too_toxic(ms) is True              # unidireccional Y con volumen
+    ms.flow_ratio = -0.9
+    assert g.too_toxic(ms) is True              # también en dirección vendedora
+    ms.flow_ratio = 0.3
+    assert g.too_toxic(ms) is False             # flujo mixto: cotizar normal

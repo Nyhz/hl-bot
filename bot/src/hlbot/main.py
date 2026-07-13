@@ -112,6 +112,7 @@ def build_market_state(client, coin: str, now_ms: int, md=None,
             ms.sigma_px = md.sigma_px(coin)
             signed, total = md.flow(coin, FLOW_READ_WINDOW_S)
             ms.flow_usd = signed
+            ms.flow_total_usd = total
             ms.flow_ratio = (signed / total) if total > 0 else None
     if ms.mid <= 0:
         ms.mid = client.mid(coin)   # fallback REST (WS frío o sin marketdata)
