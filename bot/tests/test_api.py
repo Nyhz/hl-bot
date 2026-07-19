@@ -23,51 +23,50 @@ def test_state_is_idle_initially():
     assert r.status_code == 200
     assert r.json()["state"] == "idle"
 
+LAUNCH = {"capital": 60.0, "max_loss": 10.0}
+
 def test_launch_requires_token():
     client, _ = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0,
-            "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
-    r = client.post("/session/launch", json=body)
+    r = client.post("/session/launch", json=LAUNCH)
     assert r.status_code == 401
 
 def test_launch_with_token_moves_to_scanning():
     client, engine = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 10.0, "max_open_positions": 4,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
-    r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    r = client.post("/session/launch", json=LAUNCH, headers={"X-Control-Token": TOKEN})
     assert r.status_code == 200
     assert engine.state.value == "scanning"
 
-def test_launch_clamps_max_open_to_4():
+def test_launch_applies_fixed_profile():
+    # El launch NO acepta parámetros de estrategia: aplica el perfil afinado
+    # (soak 2) y solo capital/pérdida máxima vienen del usuario.
     client, engine = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 10.0, "max_open_positions": 10,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
+    body = {"capital": 60.0, "max_loss": 8.0,
+            "grid_n": 99, "min_spread_frac": 0.00001,           # se ignoran
+            "limits": {"max_net_delta": 9999.0}}
     r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
     assert r.status_code == 200
-    assert engine.risk.limits.max_open_positions == 4   # tope duro
+    cfg = engine.cfg
+    assert cfg.grid_n == 3
+    assert cfg.min_spread_frac == 0.0015
+    assert cfg.trend_entries is False
+    assert cfg.watchlist == ["BTC", "ETH"]
+    assert engine.risk.limits.max_net_delta == 45.0
+    assert engine.risk.limits.max_open_positions == 2
+    assert engine.risk.limits.daily_loss_limit == 8.0
+    assert engine.risk.limits.total_loss_limit == 8.0
 
-def test_launch_rejects_position_below_min_422():
+def test_launch_rejects_bad_max_loss_422():
     client, _ = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 5.0, "max_open_positions": 4,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
-    r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    r = client.post("/session/launch", json={"capital": 60.0, "max_loss": 0.0},
+                    headers={"X-Control-Token": TOKEN})
+    assert r.status_code == 422
+    r = client.post("/session/launch", json={"capital": 60.0, "max_loss": 61.0},
+                    headers={"X-Control-Token": TOKEN})
     assert r.status_code == 422
 
 def test_kill_requires_confirm_flag():
     client, engine = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 10.0, "max_open_positions": 4,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
-    client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    client.post("/session/launch", json=LAUNCH, headers={"X-Control-Token": TOKEN})
     r = client.post("/session/kill", json={"confirm": False},
                     headers={"X-Control-Token": TOKEN})
     assert r.status_code == 400
@@ -81,11 +80,7 @@ def test_close_from_idle_is_409():
 
 def test_kill_failure_returns_502_with_detail():
     client, engine = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 4,
-            "limits": {"max_position_notional": 10.0, "max_open_positions": 4,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
-    client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    client.post("/session/launch", json=LAUNCH, headers={"X-Control-Token": TOKEN})
     # posición que market_close (fake) no elimina -> kill debe fallar, no fingir éxito
     engine.client.positions = [{"position": {"coin": "ETH", "szi": "0.01",
                                              "positionValue": "30"}}]
@@ -100,12 +95,10 @@ def test_close_requires_token():
     assert r.status_code == 401
 
 def test_launch_unaffordable_grid_returns_422():
+    # El perfil necesita capital >= grid_n * $10 por rung
     client, _ = _client()
-    body = {"watchlist": ["ETH"], "capital": 40.0, "grid_n": 10,
-            "limits": {"max_position_notional": 15.0, "max_open_positions": 3,
-                       "max_leverage": 2.0, "daily_loss_limit": 5.0,
-                       "total_loss_limit": 20.0}}
-    r = client.post("/session/launch", json=body, headers={"X-Control-Token": TOKEN})
+    r = client.post("/session/launch", json={"capital": 20.0, "max_loss": 5.0},
+                    headers={"X-Control-Token": TOKEN})
     assert r.status_code == 422
 
 

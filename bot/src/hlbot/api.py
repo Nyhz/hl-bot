@@ -2,10 +2,11 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+from dataclasses import replace
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from hlbot.models import SessionConfig, RiskLimits
+from hlbot.models import SessionConfig, RiskLimits, tuned_session_config
 from hlbot.session_engine import SessionEngine
 from hlbot.account import merge_tape, format_candles
 from hlbot.track_record import session_summary, global_stats
@@ -13,26 +14,17 @@ from hlbot.backtest.data import fetch_candles, fetch_funding
 from hlbot.backtest.runner import run_backtest
 
 LIQUID_MAJORS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
-MAX_OPEN_CAP = 4  # tope duro de posiciones simultaneas, no editable
 
 
-class LimitsBody(BaseModel):
-    max_position_notional: float
-    max_open_positions: int
-    max_leverage: float
-    daily_loss_limit: float
-    total_loss_limit: float
-    max_coin_notional: float = 30.0
-    max_net_delta: float = 30.0    # tope de delta neto agregado en $ entre monedas
+class MaxLossBody(BaseModel):
+    max_loss: float
 
 
 class LaunchBody(BaseModel):
-    watchlist: list[str]
+    # Únicos mandos del launch: el resto del perfil (spread, grid, caps de
+    # exposición, freno de régimen) es fijo — ver models.tuned_session_config.
     capital: float
-    limits: LimitsBody
-    grid_n: int = 10
-    grid_range_pct: float = 0.02
-    adx_threshold: float = 25.0
+    max_loss: float
 
 
 class KillBody(BaseModel):
@@ -101,12 +93,13 @@ def create_app(engine: SessionEngine, control_token: str,
     @app.post("/session/launch")
     def launch(body: LaunchBody, x_control_token: str | None = Header(default=None)):
         _auth(x_control_token)
-        limits_data = body.limits.model_dump()
-        limits_data["max_open_positions"] = min(MAX_OPEN_CAP, limits_data["max_open_positions"])
-        limits = RiskLimits(**limits_data)
-        cfg = SessionConfig(watchlist=body.watchlist, capital=body.capital, limits=limits,
-                            grid_n=body.grid_n, grid_range_pct=body.grid_range_pct,
-                            adx_threshold=body.adx_threshold)
+        if body.max_loss <= 0:
+            raise HTTPException(status_code=422, detail="max_loss debe ser > 0")
+        if body.max_loss > body.capital:
+            raise HTTPException(
+                status_code=422,
+                detail="max_loss no puede superar el capital de la sesión")
+        cfg = tuned_session_config(body.capital, body.max_loss)
         try:
             with engine.lock:
                 engine.launch(cfg)
@@ -140,12 +133,18 @@ def create_app(engine: SessionEngine, control_token: str,
         return {"state": engine.state.value}
 
     @app.post("/limits")
-    def update_limits(body: LimitsBody, x_control_token: str | None = Header(default=None)):
+    def update_limits(body: MaxLossBody, x_control_token: str | None = Header(default=None)):
+        # En sesión solo es editable la pérdida máxima; los caps de exposición
+        # forman parte del perfil fijo (mismo candado que el launch).
         _auth(x_control_token)
+        if body.max_loss <= 0:
+            raise HTTPException(status_code=422, detail="max_loss debe ser > 0")
         with engine.lock:
             if engine.risk is None:
                 raise HTTPException(status_code=409, detail="no hay sesion activa")
-            engine.risk.limits = RiskLimits(**body.model_dump())
+            engine.risk.limits = replace(engine.risk.limits,
+                                         daily_loss_limit=body.max_loss,
+                                         total_loss_limit=body.max_loss)
         return {"ok": True}
 
     @app.websocket("/ws")

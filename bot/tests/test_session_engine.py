@@ -12,7 +12,7 @@ class FakeClient:
         self.canceled = []
         self.canceled_oids = []
         self.resting = []
-        self._mid = {"ETH": 3000.0}
+        self._mid = {"ETH": 3000.0, "BTC": 60000.0}
         self.account_value = "40"
         self.positions = []
         self.leverage_set = []
@@ -647,6 +647,79 @@ def test_grid_exit_rung_allowed_at_coin_cap():
     assert sells                                           # el rung reductor se colocó
 
 
+class _StubGrid:
+    def __init__(self, decisions):
+        self._decisions = decisions
+    def evaluate(self, ms): return list(self._decisions)
+    def half_spread(self, ms, sigma): return 1.0
+    def _sigma(self, ms): return 1.0
+    def too_toxic(self, ms): return False
+    def armed_triggers(self, ms): return []
+    def conditions(self, ms): return []
+
+
+class _StubNoTrend:
+    def is_trending(self, ms): return False
+    def evaluate(self, ms): return []
+    def armed_triggers(self, ms): return []
+    def conditions(self, ms): return []
+
+
+def test_grid_add_rung_allowed_on_open_coin_at_max_positions():
+    # Moneda YA abierta con max_open_positions alcanzado: el rung que AÑADE no
+    # abre posición nueva y no debe rechazarse. Bloquearlo dejó a la sesión 5
+    # sin lado de entrada 2.5 días (solo quotaba el lado reductor).
+    from hlbot.models import Decision, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.003", "positionValue": "9"}}]
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 1, 2.0, 5.0, 20.0)   # max_open_positions=1, ya alcanzado
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(cfg)
+    eng.grids["ETH"] = _StubGrid([Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                                           price=2990.0, size=0.003, reason="rung de entrada")])
+    eng.trends["ETH"] = _StubNoTrend()
+    eng.tick(_flat_ms())
+    buys = [o for o in client.orders if o[1] is True]
+    assert buys                                            # el rung aditivo se colocó
+    assert not any(k == "rechazo" for k, _ in store.risk_events)
+
+
+def test_new_coin_rejected_at_max_positions_and_throttled():
+    # Moneda PLANA con el cap ocupado por otra: se rechaza, pero el evento se
+    # loguea UNA vez por ventana y al re-loguear cuenta los suprimidos
+    # (sesión 5: 230k filas idénticas de 'max_open_positions alcanzado').
+    from hlbot.models import Decision, Side
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "BTC", "szi": "0.0001", "positionValue": "9"}}]
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 1, 2.0, 5.0, 20.0)   # cap ocupado por BTC
+    cfg = SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                        grid_n=4, grid_range_pct=0.02)
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(cfg)
+    eng.grids["ETH"] = _StubGrid([Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                                           price=2990.0, size=0.003, reason="rung de entrada")])
+    eng.trends["ETH"] = _StubNoTrend()
+    eng.tick(_flat_ms())
+    eng.tick(_flat_ms())
+    eng.tick(_flat_ms())
+    assert not any(o[1] is True for o in client.orders)    # nunca se colocó
+    rejects = [d for k, d in store.risk_events if k == "rechazo"]
+    assert len(rejects) == 1 and "ETH" in rejects[0]
+    # pasada la ventana: se re-loguea con el nº de rechazos suprimidos
+    key = ("ETH", "max_open_positions alcanzado")
+    ts, n = eng._reject_throttle[key]
+    eng._reject_throttle[key] = (ts - 301.0, n)
+    eng.tick(_flat_ms())
+    rejects = [d for k, d in store.risk_events if k == "rechazo"]
+    assert len(rejects) == 2 and "+2 suprimidos" in rejects[1]
+
+
 def test_trend_entry_rejected_not_marked_open():
     # rechazo SIN excepción (p.ej. margen insuficiente): el coin NO debe entrar en
     # trend_open sin posición real (quedaría atascado toda la sesión: bloqueado para
@@ -1036,3 +1109,114 @@ def test_reconcile_stale_cancel_leaves_tape_trace():
     moved["ETH"].mid = 3000.0 * 1.01                      # rungs viejos -> stale
     eng.tick(moved)
     assert any(a == "cancel" and "reconcile" in r for _, a, r in store.decisions)
+
+
+def _cfg_caps(coin_cap=30.0, net_cap=30.0, grid_n=4):
+    limits = RiskLimits(10.0, 4, 9.0, 50.0, 200.0, coin_cap, net_cap)
+    return SessionConfig(watchlist=["ETH"], capital=100.0, limits=limits,
+                         grid_n=grid_n, grid_range_pct=0.02)
+
+
+def test_resting_orders_count_against_coin_cap():
+    # Fuga del soak 2: posición $20 + $20 de compras EN REPOSO ya agotan el cap
+    # de $30 -> un rung comprador nuevo debe rechazarse aunque pos+orden <= cap.
+    client = FakeClient()
+    client.positions = [{"position": {"coin": "ETH", "szi": "0.00667",
+                                      "positionValue": "20"}}]
+    client.account_value = "1000"
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg_caps())
+    eng._resting_adds["ETH"] = (20.0, 0.0)     # $20 de compras vivas en el libro
+    from hlbot.models import Decision, Side
+    d = Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                 price=3000.0, size=0.0033, reason="rung")   # ~$9.9
+    ms = _flat_ms()["ETH"]
+    ms.inventory = 0.00667
+    assert eng._limit_allowed(ms, d, 1, 1000.0, 20.0, 20.0) is False
+    assert any("max_coin_notional" in d_ for _, d_ in eng.store.risk_events)
+
+
+def test_resting_orders_count_against_net_delta():
+    client = FakeClient()
+    client.account_value = "1000"
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg_caps(coin_cap=1e9, net_cap=30.0))
+    eng._net_delta = 15.0
+    eng._resting_adds["BTC"] = (10.0, 0.0)     # compras vivas de OTRA moneda
+    from hlbot.models import Decision, Side
+    d = Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                 price=3000.0, size=0.0033, reason="rung")   # ~$9.9
+    ms = _flat_ms()["ETH"]
+    # peor caso: 15 + 10 (reposo BTC) + 10.2 > 30 -> rechazo
+    assert eng._limit_allowed(ms, d, 1, 1000.0, 15.0, 0.0) is False
+    assert any("max_net_delta" in d_ for _, d_ in eng.store.risk_events)
+    # el lado que REDUCE el delta pasa siempre
+    d2 = Decision("ETH", ActionType.PLACE_LIMIT, side=Side.SELL,
+                  price=3000.0, size=0.0033, reason="rung")
+    assert eng._limit_allowed(ms, d2, 1, 1000.0, 15.0, 0.0) is True
+
+
+def test_reconcile_budget_is_sequential_within_batch():
+    # Dos rungs compradores de ~$10 con cap net_delta $15: el primero pasa,
+    # el segundo debe consumir el presupuesto del primero y rechazarse.
+    client = FakeClient()
+    client.account_value = "1000"
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg_caps(coin_cap=1e9, net_cap=15.0, grid_n=2))
+    from hlbot.models import Decision, Side
+    ms = _flat_ms()["ETH"]
+    decisions = [
+        Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                 price=2990.0, size=0.0033, reason="rung a"),
+        Decision("ETH", ActionType.PLACE_LIMIT, side=Side.BUY,
+                 price=2980.0, size=0.0033, reason="rung b"),
+    ]
+    eng._reconcile_grid("ETH", ms, decisions, 0, 1000.0, 0.0, 0.0)
+    placed = [o for o in client.orders if not o[4]]   # tupla: [4]=reduce_only
+    assert len(placed) == 1                     # solo el primero cupo en el cap
+
+
+def _trend_stub(direction=-1, trending=True):
+    class _T:
+        def is_trending(self, ms): return trending
+        def direction(self, ms): return direction
+        def evaluate(self, ms): return []
+        def armed_triggers(self, ms): return []
+        def conditions(self, ms): return []
+    return _T()
+
+
+def test_trend_entries_off_grid_keeps_quoting_with_side_brake():
+    # Con trend_entries=False y tendencia BAJISTA: el grid sigue activo pero sin
+    # rungs compradores aditivos; los vendedores se colocan.
+    client = FakeClient()
+    client.account_value = "1000"
+    limits = RiskLimits(10.0, 4, 9.0, 50.0, 200.0)
+    cfg = SessionConfig(watchlist=["ETH"], capital=100.0, limits=limits,
+                        grid_n=2, grid_range_pct=0.02, trend_entries=False)
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(cfg)
+    eng.trends["ETH"] = _trend_stub(direction=-1)
+    eng.tick(_flat_ms())
+    assert client.market_opens == []                    # sin entradas taker
+    buys = [o for o in client.orders if o[1]]
+    sells = [o for o in client.orders if not o[1]]
+    assert buys == [] and len(sells) > 0                # solo el lado con el movimiento
+    assert client.canceled == []                        # NO retirada total del grid
+
+
+def test_trend_entries_off_keeps_reducing_side_against_trend():
+    # Corto abierto + tendencia bajista: las COMPRAS reducen -> deben quedarse.
+    client = FakeClient()
+    client.account_value = "1000"
+    client.positions = [{"position": {"coin": "ETH", "szi": "-0.005",
+                                      "positionValue": "15"}}]
+    limits = RiskLimits(10.0, 4, 9.0, 50.0, 200.0)
+    cfg = SessionConfig(watchlist=["ETH"], capital=100.0, limits=limits,
+                        grid_n=2, grid_range_pct=0.02, trend_entries=False)
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(cfg)
+    eng.trends["ETH"] = _trend_stub(direction=-1)
+    eng.tick(_flat_ms())
+    buys = [o for o in client.orders if o[1]]
+    assert len(buys) > 0                                # el lado reductor sobrevive

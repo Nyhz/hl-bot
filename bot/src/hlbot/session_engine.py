@@ -14,6 +14,15 @@ from hlbot.indicators import atr
 from hlbot.hl_client import order_response_error, order_response_errors
 
 PNL_SNAPSHOT_EVERY_TICKS = 12   # ~1/min a 5s/tick
+REJECT_LOG_EVERY_S = 300.0      # un rechazo persistente se re-loguea cada 5 min,
+                                # no cada tick (sesión 5: 230k filas del mismo motivo)
+
+
+def _order_is_buy(o: dict) -> bool:
+    # open_orders del exchange trae side "B"/"A"; el broker de backtest, is_buy.
+    if "is_buy" in o:
+        return bool(o["is_buy"])
+    return str(o.get("side", "")) == "B"
 
 
 class SessionEngine:
@@ -41,7 +50,13 @@ class SessionEngine:
         # transitorio (≤cooldown): no se persiste; tras reiniciar se re-evalúa.
         self.toxic_until: dict[str, float] = {}
         self._net_delta = 0.0   # Σ notional firmado entre monedas (se recalcula por tick)
+        # Reposo vivo por coin: (Σ notional de compras, Σ de ventas). Lo refresca
+        # el reconciliador cada tick; los caps lo descuentan como peor caso.
+        self._resting_adds: dict[str, tuple[float, float]] = {}
         self._tick_count = 0
+        # (coin, motivo) -> (ts del último evento grabado, rechazos suprimidos desde
+        # entonces). Solo throttle de logging; no persiste (se re-aprende al vuelo).
+        self._reject_throttle: dict[tuple[str, str], tuple[float, int]] = {}
 
     def launch(self, cfg: SessionConfig) -> None:
         if self.state != SessionState.IDLE:
@@ -85,6 +100,8 @@ class SessionEngine:
         self.trend_confirmed = set()
         self.trend_regime = set()
         self.toxic_until = {}
+        self._reject_throttle = {}
+        self._resting_adds = {}
         self.paused = False
         self.state = SessionState.SCANNING
         self._save_runtime()
@@ -198,6 +215,7 @@ class SessionEngine:
             for coin in self.cfg.watchlist:
                 try:
                     self.client.cancel_all(coin)
+                    self._resting_adds[coin] = (0.0, 0.0)
                 except Exception as e:
                     self.store.record_risk_event(
                         self.session_id, "close_error", f"cancel_all {coin}: {e}")
@@ -220,6 +238,7 @@ class SessionEngine:
         for coin in coins:
             try:
                 self.client.cancel_all(coin)
+                self._resting_adds[coin] = (0.0, 0.0)
             except Exception as e:
                 errors.append(f"cancel_all {coin}: {e}")
             try:
@@ -265,6 +284,8 @@ class SessionEngine:
         self.trend_confirmed = set()
         self.trend_regime = set()
         self.toxic_until = {}
+        self._reject_throttle = {}
+        self._resting_adds = {}
 
     def _decisions_for(self, ms: MarketState) -> list:
         trend = self.trends[ms.coin]
@@ -274,6 +295,8 @@ class SessionEngine:
         if abs(ms.inventory) > 1e-12:          # posición de grid abierta -> la gestiona el grid
             return grid.evaluate(ms)           #   (aunque el régimen sea de tendencia)
         if trend.is_trending(ms):              # plano + tendencia -> momentum puede entrar
+            if not self.cfg.trend_entries:     # ...salvo con entradas apagadas: el
+                return grid.evaluate(ms)       # régimen solo filtra lados del grid
             return trend.evaluate(ms)
         return grid.evaluate(ms)               # plano + lateral -> grid
 
@@ -310,26 +333,65 @@ class SessionEngine:
                 out[coin] = abs(float(pos.get("positionValue", 0) or 0))
         return out
 
-    def _risk_ok(self, notional: float, n_open: int, equity: float,
+    def _record_reject(self, coin: str, reason: str) -> None:
+        # Un guard que rechaza lo re-intenta CADA tick: sin throttle el mismo
+        # motivo genera decenas de miles de risk_events al día.
+        now = time.time()
+        key = (coin, reason)
+        last_ts, suppressed = self._reject_throttle.get(key, (0.0, 0))
+        if now - last_ts < REJECT_LOG_EVERY_S:
+            self._reject_throttle[key] = (last_ts, suppressed + 1)
+            return
+        detail = f"{coin}: {reason}"
+        if suppressed:
+            detail += f" (+{suppressed} suprimidos)"
+        self.store.record_risk_event(self.session_id, "rechazo", detail)
+        self._reject_throttle[key] = (now, 0)
+
+    def _risk_ok(self, coin: str, notional: float, n_open: int, equity: float,
                  gross: float, coin_notional: float,
-                 signed_notional: float = 0.0) -> bool:
+                 signed_notional: float = 0.0, already_open: bool = False,
+                 inv_usd: float | None = None,
+                 rest_buy: float = 0.0, rest_sell: float = 0.0) -> bool:
         # Leverage REAL = (notional bruto abierto + esta orden) / equity de la cuenta.
         lev = (gross + notional) / equity if equity > 0 else 1e9
-        ok, reason = self.risk.can_open(notional, n_open, lev)
+        ok, reason = self.risk.can_open(notional, n_open, lev,
+                                        already_open=already_open)
         if not ok:
-            self.store.record_risk_event(self.session_id, "rechazo", reason)
+            self._record_reject(coin, reason)
             return False
-        if coin_notional + notional > self.cfg.limits.max_coin_notional:
-            self.store.record_risk_event(
-                self.session_id, "rechazo", "excede max_coin_notional")
-            return False
+        # FUGA del soak 2: el check era solo contra la POSICIÓN, pero la escalera
+        # en reposo se llena después (net_delta llegó a -54 con cap 30). Los caps
+        # se evalúan contra el PEOR CASO: inventario + reposo del mismo lado + esta
+        # orden, todo firmado (así el lado que reduce sigue pasando siempre).
+        is_buy = signed_notional >= 0
+        if inv_usd is None:
+            if coin_notional + notional > self.cfg.limits.max_coin_notional:
+                self._record_reject(coin, "excede max_coin_notional")
+                return False
+        else:
+            if is_buy:
+                breach_coin = (inv_usd + rest_buy + notional
+                               > self.cfg.limits.max_coin_notional)
+            else:
+                breach_coin = (inv_usd - rest_sell - notional
+                               < -self.cfg.limits.max_coin_notional)
+            if breach_coin:
+                self._record_reject(coin, "excede max_coin_notional")
+                return False
         # Delta neto de CARTERA: majors correlacionados -> N longs = 1 posición
-        # grande. Bloquea solo lo que ALEJA de cero (reducir |delta| siempre pasa).
-        after = self._net_delta + signed_notional
-        if (abs(after) > self.cfg.limits.max_net_delta
-                and abs(after) > abs(self._net_delta)):
-            self.store.record_risk_event(
-                self.session_id, "rechazo", "excede max_net_delta")
+        # grande. Peor caso direccional: si esta orden compra, todo el reposo
+        # comprador (de todas las monedas) también puede llenarse.
+        other_buy = sum(b for c, (b, s) in self._resting_adds.items() if c != coin)
+        other_sell = sum(s for c, (b, s) in self._resting_adds.items() if c != coin)
+        if is_buy:
+            after = self._net_delta + other_buy + rest_buy + notional
+            breach = after > self.cfg.limits.max_net_delta
+        else:
+            after = self._net_delta - other_sell - rest_sell - notional
+            breach = after < -self.cfg.limits.max_net_delta
+        if breach:
+            self._record_reject(coin, "excede max_net_delta")
             return False
         return True
 
@@ -386,20 +448,39 @@ class SessionEngine:
                 "inventory": ms.inventory,
                 "toxic": 1 if time.time() < self.toxic_until.get(coin, 0.0) else 0,
             })
-            # #4: al entrar en régimen de tendencia, cancelar una vez el grid en reposo
-            # (deja de mezclar inventario grid con la entrada de tendencia).
             trending = self.trends[coin].is_trending(ms)
-            if trending and coin not in self.trend_regime and coin not in self.trend_open:
-                self.client.cancel_all(coin)
-                self.trend_regime.add(coin)
-                self.store.record_decision(
-                    self.session_id, coin, ActionType.CANCEL.value,
-                    "régimen de tendencia: grid retirado")
-            elif not trending:
-                self.trend_regime.discard(coin)
+            if self.cfg.trend_entries:
+                # #4: al entrar en régimen de tendencia, cancelar una vez el grid en
+                # reposo (deja de mezclar inventario grid con la entrada de tendencia).
+                if (trending and coin not in self.trend_regime
+                        and coin not in self.trend_open):
+                    self.client.cancel_all(coin)
+                    self._resting_adds[coin] = (0.0, 0.0)
+                    self.trend_regime.add(coin)
+                    self.store.record_decision(
+                        self.session_id, coin, ActionType.CANCEL.value,
+                        "régimen de tendencia: grid retirado")
+                elif not trending:
+                    self.trend_regime.discard(coin)
+            else:
+                # Freno por lado (soak 2): en tendencia el grid sigue cotizando,
+                # pero sin rungs que añadan exposición CONTRA el movimiento; el
+                # reconciliador cancela solos los del lado retirado (dejan de
+                # estar en desired).
+                if trending and coin not in self.trend_regime:
+                    self.trend_regime.add(coin)
+                    lado = ("comprador" if self.trends[coin].direction(ms) < 0
+                            else "vendedor")
+                    self.store.record_decision(
+                        self.session_id, coin, ActionType.CANCEL.value,
+                        f"freno de régimen: lado {lado} retirado")
+                elif not trending:
+                    self.trend_regime.discard(coin)
             decisions = self._decisions_for(ms)
+            if not self.cfg.trend_entries and trending:
+                decisions = self._regime_side_filter(coin, ms, decisions)
             grid_active = (coin not in self.trend_open
-                           and not self.trends[coin].is_trending(ms))
+                           and (not trending if self.cfg.trend_entries else True))
             if grid_active and self.state != SessionState.CLOSING:
                 if not self._toxicity_gate(coin, ms):
                     self._reconcile_grid(coin, ms, decisions, n_open, equity, gross,
@@ -448,6 +529,7 @@ class SessionEngine:
         self.toxic_until[coin] = now + self.cfg.toxicity_cooldown_s
         try:
             self.client.cancel_all(coin)
+            self._resting_adds[coin] = (0.0, 0.0)
         except Exception as e:
             self.store.record_risk_event(self.session_id, "toxicity", str(e))
         self.store.record_decision(
@@ -466,6 +548,7 @@ class SessionEngine:
                 continue
             try:
                 self.client.cancel_all(coin)
+                self._resting_adds[coin] = (0.0, 0.0)
                 err = order_response_error(self.client.market_close(coin))
             except Exception as e:
                 err = str(e)
@@ -473,7 +556,9 @@ class SessionEngine:
                 self.store.record_risk_event(
                     self.session_id, "close_error", f"{coin}: {err}")
 
-    def _limit_allowed(self, ms, d, n_open, equity, gross, coin_notional) -> bool:
+    def _limit_allowed(self, ms, d, n_open, equity, gross, coin_notional,
+                       rest_buy: float | None = None,
+                       rest_sell: float | None = None) -> bool:
         # Un rung del lado contrario que no supera el inventario REDUCE la posición:
         # no debe pasar por can_open/max_coin_notional (bloquearlo congela la
         # posición en el cap sin vía de salida).
@@ -484,13 +569,52 @@ class SessionEngine:
             return True
         notional = (d.price or 0) * (d.size or 0)
         signed = notional if d.side == Side.BUY else -notional
-        return self._risk_ok(notional, n_open, equity, gross, coin_notional, signed)
+        rb, rs = self._resting_adds.get(ms.coin, (0.0, 0.0))
+        return self._risk_ok(ms.coin, notional, n_open, equity, gross,
+                             coin_notional, signed,
+                             already_open=abs(ms.inventory) > 1e-12,
+                             inv_usd=self._signed_inv_usd(ms, coin_notional),
+                             rest_buy=rb if rest_buy is None else rest_buy,
+                             rest_sell=rs if rest_sell is None else rest_sell)
+
+    def _regime_side_filter(self, coin: str, ms, decisions: list) -> list:
+        """Sin entradas de momentum, la tendencia solo VETA el lado del grid que
+        añade exposición contra el movimiento (comprar toda una caída fue la
+        captura negativa del 17-jul). Los rungs que reducen posición se quedan.
+        """
+        dir_ = self.trends[coin].direction(ms)
+        if dir_ == 0:
+            return decisions
+        out = []
+        for d in decisions:
+            if d.action == ActionType.PLACE_LIMIT and not d.reduce_only:
+                against = ((d.side == Side.BUY and dir_ < 0)
+                           or (d.side == Side.SELL and dir_ > 0))
+                adds = ((d.side == Side.BUY and ms.inventory >= -1e-12)
+                        or (d.side == Side.SELL and ms.inventory <= 1e-12))
+                if against and adds:
+                    continue
+            out.append(d)
+        return out
+
+    @staticmethod
+    def _signed_inv_usd(ms, coin_notional: float) -> float | None:
+        # Magnitud del positionValue (autoritativa) con el signo del szi. Si el
+        # exchange da notional sin signo visible, None -> check legado (abs).
+        if ms.inventory > 1e-12:
+            return coin_notional
+        if ms.inventory < -1e-12:
+            return -coin_notional
+        return 0.0 if coin_notional <= 1e-9 else None
 
     def _reconcile_grid(self, coin, ms, decisions, n_open, equity, gross, coin_notional) -> None:
         try:
             desired = [(d.price, d) for d in decisions if d.action == ActionType.PLACE_LIMIT]
             grid = self.grids[coin]
-            tol = max(grid.half_spread(ms, grid._sigma(ms)) / 2.0, 1e-9)
+            # 0.75·half: con half/2 el 89% de las órdenes se cancelaba sin llenarse
+            # (8.4k places / 933 fills en el soak 2) — churn que quema prioridad
+            # de cola; una banda más ancha recoloca solo cuando de verdad toca.
+            tol = max(grid.half_spread(ms, grid._sigma(ms)) * 0.75, 1e-9)
             open_orders = self.client.open_orders(coin)
             # 1) cancelar stale en UN batch: reposo lejos de cualquier precio deseado
             stale = [o["oid"] for o in open_orders
@@ -502,11 +626,32 @@ class SessionEngine:
                 self.store.record_decision(
                     self.session_id, coin, ActionType.CANCEL.value,
                     f"reconcile: {len(stale)} rungs stale retirados")
-            # 2) colocar las deseadas que falten, también en UN batch
+            # Reposo superviviente por lado: es exposición latente que los caps
+            # deben descontar (la fuga del soak 2: el check era solo al colocar).
+            stale_set = set(stale)
+            keep = [o for o in open_orders if o.get("oid") not in stale_set]
+            rest_buy = sum(float(o.get("limitPx", 0) or 0) * float(o.get("sz", 0) or 0)
+                           for o in keep if _order_is_buy(o))
+            rest_sell = sum(float(o.get("limitPx", 0) or 0) * float(o.get("sz", 0) or 0)
+                            for o in keep if not _order_is_buy(o))
+            self._resting_adds[coin] = (rest_buy, rest_sell)
+            # 2) colocar las deseadas que falten, también en UN batch. El presupuesto
+            # es SECUENCIAL: cada orden aprobada consume cap para las siguientes.
             rest_px = [float(o.get("limitPx", 0) or 0) for o in open_orders]
-            to_place = [d for dp, d in desired
-                        if not any(abs(dp - rp) <= tol for rp in rest_px)
-                        and self._limit_allowed(ms, d, n_open, equity, gross, coin_notional)]
+            to_place = []
+            for dp, d in desired:
+                if any(abs(dp - rp) <= tol for rp in rest_px):
+                    continue
+                if not self._limit_allowed(ms, d, n_open, equity, gross,
+                                           coin_notional, rest_buy, rest_sell):
+                    continue
+                to_place.append(d)
+                add = (d.price or 0) * (d.size or 0)
+                if d.side == Side.BUY:
+                    rest_buy += add
+                else:
+                    rest_sell += add
+            self._resting_adds[coin] = (rest_buy, rest_sell)
             if not to_place:
                 return
             if d_side_missing := [d for d in to_place if d.side is None]:
@@ -550,8 +695,12 @@ class SessionEngine:
             if not d.reduce_only:
                 notional = ms.mid * (d.size or 0)
                 signed = notional if d.side == Side.BUY else -notional
-                if not self._risk_ok(notional, n_open, equity, gross,
-                                     coin_notional, signed):
+                rb, rs = self._resting_adds.get(coin, (0.0, 0.0))
+                if not self._risk_ok(coin, notional, n_open, equity, gross,
+                                     coin_notional, signed,
+                                     already_open=abs(ms.inventory) > 1e-12,
+                                     inv_usd=self._signed_inv_usd(ms, coin_notional),
+                                     rest_buy=rb, rest_sell=rs):
                     return
             if d.side is None:
                 raise ValueError("PLACE_MARKET requiere side")
@@ -588,7 +737,9 @@ class SessionEngine:
             highs = [c.high for c in ms.candles]
             lows = [c.low for c in ms.candles]
             atr_ = atr(highs, lows, closes, self.cfg.atr_period)[-1] if len(closes) > self.cfg.atr_period else 0.0
-            thr = max(0.1 * atr_, 1e-9)
+            # 0.35·ATR: con 0.1 el stop se recolocaba cada ~30s (365 veces en 3h
+            # de tendencia en el soak 2) sin comprar protección real.
+            thr = max(0.35 * atr_, 1e-9)
             cur = self.stop_levels.get(coin)
             is_long_stop = (d.side == Side.SELL)   # stop de venta protege un largo
             if cur is None:

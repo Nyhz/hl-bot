@@ -108,6 +108,11 @@ class SessionConfig:
     ema_slow: int = 21
     adx_period: int = 14
     adx_threshold: float = 25.0
+    # Entradas de momentum (PLACE_MARKET + stops). Con False el régimen de
+    # tendencia solo actúa de FRENO del grid: se retira el lado que añade
+    # exposición contra el movimiento y se sigue cotizando el resto (soak 2:
+    # 4/4 entradas perdedoras y 53 retiradas completas del grid).
+    trend_entries: bool = True
     atr_period: int = 14
     atr_stop_mult: float = 2.0
     # Avellaneda-Stoikov + funding
@@ -128,6 +133,29 @@ class SessionConfig:
     # $10 mínimo de HL, max_position_notional). 0 = desactivado (tamaño fijo v1).
     # Solo muerde si max_position_notional > $10 (el mínimo de HL es el suelo).
     risk_per_rung_usd: float = 0.0
+
+
+# Perfil operativo canónico (análisis del soak 2 + sweep de backtests,
+# 2026-07-19: suelo 15 bps + grid_n 3 multiplicó ×4-5 el PnL del soak). El
+# launch expone únicamente capital y pérdida máxima: los parámetros de
+# rentabilidad NO se eligen por sesión.
+# Momentum APAGADO del todo: las entradas perdieron 4/4 en vivo, y el freno por
+# lado (trend_entries=False + ADX 25) perdió contra el grid puro en el A/B de
+# backtest (ETH -0.43 vs +0.42; el régimen ADX llega tarde y vende suelos). El
+# adx_threshold=999 desactiva también el freno; el código queda para cuando
+# haya una señal de régimen mejor calibrada en mainnet.
+PROFILE_WATCHLIST = ["BTC", "ETH"]
+
+
+def tuned_session_config(capital: float, max_loss: float) -> SessionConfig:
+    limits = RiskLimits(
+        max_position_notional=10.0, max_open_positions=2, max_leverage=2.0,
+        daily_loss_limit=max_loss, total_loss_limit=max_loss,
+        max_coin_notional=30.0, max_net_delta=45.0)
+    return SessionConfig(
+        watchlist=list(PROFILE_WATCHLIST), capital=capital, limits=limits,
+        grid_n=3, min_spread_frac=0.0015,
+        trend_entries=False, adx_threshold=999.0)
 
 
 @dataclass

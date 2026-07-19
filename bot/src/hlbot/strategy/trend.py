@@ -21,6 +21,17 @@ class TrendOverlayStrategy:
         atr_ = atr(highs, lows, closes, self.cfg.atr_period)[-1]
         return ef, es, adx_now, adx_prev, atr_
 
+    def direction(self, ms: MarketState) -> int:
+        # +1 tendencia alcista (EMA fast>slow), -1 bajista, 0 sin señal.
+        if len(ms.candles) < self.cfg.ema_slow:
+            return 0
+        ef, es, *_ = self._signals(ms)
+        if ef > es:
+            return 1
+        if ef < es:
+            return -1
+        return 0
+
     def is_trending(self, ms: MarketState) -> bool:
         if len(ms.candles) < self.cfg.ema_slow:
             return False
