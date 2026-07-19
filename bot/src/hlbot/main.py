@@ -51,6 +51,11 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool,
                 _record_extras(store, engine.session_id, fills, funding)
         except Exception as e:
             print(f"[account_cache] extras error: {e}", flush=True)
+            # Soak 2: userFunding de testnet devolvió (500,'null') y la sesión
+            # acabó con 0 pagos de funding registrados SIN rastro en la BD — el
+            # tilt de funding quedó ciego. Dejar constancia, con throttle horario.
+            if store is not None and engine.session_id is not None:
+                _record_extras_error(store, engine.session_id, e)
     max_open = engine.cfg.limits.max_open_positions if engine.cfg else 0
     acc = compose_account(ch, fills, funding_total, engine.session_start_value, max_open)
     if not in_session:
@@ -58,6 +63,21 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool,
     acc["_fills"] = fills
     acc["_funding"] = funding_total
     return acc
+
+
+_extras_err = {"ts": 0.0, "n": 0}
+EXTRAS_ERR_LOG_EVERY_S = 3600.0
+
+
+def _record_extras_error(store, session_id: int, e: Exception) -> None:
+    _extras_err["n"] += 1
+    now = time.time()
+    if now - _extras_err["ts"] < EXTRAS_ERR_LOG_EVERY_S:
+        return
+    store.record_risk_event(
+        session_id, "extras_error",
+        f"fills/funding no registrados: {e} ({_extras_err['n']} fallos acumulados)")
+    _extras_err["ts"] = now
 
 
 def _record_extras(store, session_id: int, fills: list[dict], funding: list[dict]) -> None:
@@ -252,8 +272,11 @@ def update_markouts(store, md, session_id) -> None:
     from hlbot.marketdata import PX_HIST_RETENTION_S
     now = time.time()
     for h in MARKOUT_HORIZONS_S:
+        # El ring cubre [now-RETENTION, now] y lo que se consulta es ts+h, así
+        # que el fill más viejo aún computable tiene edad RETENTION+h (con "-h"
+        # la ventana de h=120 exigía edad >=120 y <=60: vacía, todo NULL).
         pending = store.fills_missing_markout(session_id, h, now,
-                                              PX_HIST_RETENTION_S - h)
+                                              PX_HIST_RETENTION_S + h)
         for f in pending:
             ref = md.mid_at(f["coin"], f["ts"] + h)
             if ref is None or not f["price"]:

@@ -90,6 +90,21 @@ class BacktestBroker:
         })
         return {"resp": {"status": "ok"}, "oid": oid}
 
+    def bulk_place_limits(self, coin: str, items: list[dict],
+                          post_only: bool = True) -> dict:
+        # Mismo contrato que HLClient: un batch de límites del mismo coin.
+        for it in items:
+            self.place_limit(coin, it["is_buy"], it["price"], it["size"],
+                             post_only=post_only,
+                             reduce_only=bool(it.get("reduce_only", False)))
+        return {"status": "ok"}
+
+    def cancel_orders(self, coin: str, oids: list[int]) -> dict:
+        drop = set(oids)
+        self.resting[coin] = [o for o in self.resting.get(coin, [])
+                              if o["oid"] not in drop]
+        return {"status": "ok"}
+
     def cancel_all(self, coin: str) -> None:
         self.resting[coin] = []
 

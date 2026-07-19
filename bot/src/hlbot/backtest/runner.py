@@ -12,6 +12,7 @@ class CaptureStore:
     def __init__(self):
         self.decisions: list[dict] = []
         self.micro: list[dict] = []
+        self.risk_events: list[dict] = []
         self.current_ts = 0
 
     def create_session(self, watchlist, capital, mode="backtest"):
@@ -25,7 +26,10 @@ class CaptureStore:
                                "action": action, "reason": reason})
 
     def record_risk_event(self, sid, kind, detail):
-        pass
+        # Tragárselos escondió 6 días un backtester roto (reconcile_error por
+        # bulk_place_limits ausente -> 0 fills en silencio): siempre capturar.
+        self.risk_events.append({"ts": self.current_ts, "kind": kind,
+                                 "detail": detail})
 
     def record_pnl_snapshot(self, sid, pnl, **extras):
         pass
@@ -43,7 +47,8 @@ class CaptureStore:
 def run_backtest(coin, candles, funding_rows, cfg, sz_decimals) -> dict:
     if not candles:
         return {"metrics": compute_metrics([], [], 0.0),
-                "equity_curve": [], "trades": [], "decisions": []}
+                "equity_curve": [], "trades": [], "decisions": [],
+                "risk_events": []}
     broker = BacktestBroker(capital=cfg.capital, sz_decimals=sz_decimals)
     store = CaptureStore()
     if candles:
@@ -72,4 +77,5 @@ def run_backtest(coin, candles, funding_rows, cfg, sz_decimals) -> dict:
             equity_curve.append(final_pt)
     metrics = compute_metrics(equity_curve, broker.fills, broker.funding_total)
     return {"metrics": metrics, "equity_curve": equity_curve,
-            "trades": broker.fills, "decisions": store.decisions}
+            "trades": broker.fills, "decisions": store.decisions,
+            "risk_events": store.risk_events}

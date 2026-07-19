@@ -24,7 +24,8 @@ def test_backtest_returns_result_no_token_needed():
     r = c.post("/backtest", json={"coin": "ETH", "capital": 1000.0, "n_candles": 79})
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"metrics", "equity_curve", "trades", "decisions"}
+    assert set(body) == {"metrics", "equity_curve", "trades", "decisions",
+                         "risk_events"}
     assert "net_pnl" in body["metrics"]
 
 def test_backtest_bad_coin_returns_422():

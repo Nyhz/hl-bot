@@ -305,3 +305,22 @@ def test_refresh_records_fills_dedup(tmp_path):
     assert len(store.get_fills(sid)) == 1
     assert store.get_fills(sid)[0]["closed_pnl"] == 0.02
     assert len(store.get_funding(sid)) == 1
+
+
+def test_update_markouts_120s_computable(tmp_path):
+    # Regresión soak 2: con lookback RETENTION-h la ventana de h=120 exigía
+    # edad >=120s y <=60s a la vez -> imposible, markout_120s siempre NULL.
+    import time
+    from hlbot.main import update_markouts
+    store = Store(str(tmp_path / "t.db")); store.init_schema()
+    sid = store.create_session(["BTC"], 40.0, mode="testnet")
+    store.record_fill_unique(sid, "t1", int(time.time() - 130), "BTC", "B",
+                             "Open Long", 100.0, 0.1, 0.0, 0.0)
+
+    class _Md:
+        def mid_at(self, coin, ts, tol_s=2.0):
+            return 101.0
+
+    update_markouts(store, _Md(), sid)
+    f = store.get_fills(sid)[0]
+    assert abs(f["markout_120s"] - 100.0) < 1e-6

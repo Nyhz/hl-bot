@@ -18,7 +18,8 @@ def _oscillating(n=120, base=3000.0, amp=30.0):
 
 def test_run_backtest_returns_structure_and_runs_engine():
     res = run_backtest("ETH", _oscillating(), [], _cfg(), {"ETH": 4})
-    assert set(res) == {"metrics", "equity_curve", "trades", "decisions"}
+    assert set(res) == {"metrics", "equity_curve", "trades", "decisions",
+                        "risk_events"}
     assert len(res["equity_curve"]) > 0
     assert "net_pnl" in res["metrics"]
     # el grid llenó al menos una orden en el rango oscilante
@@ -42,3 +43,17 @@ def test_compute_metrics_drawdown_and_net():
     assert m["n_trades"] == 2                         # solo cierres cuentan como trade
     assert abs(m["win_rate"] - 0.5) < 1e-9           # 1 de 2 cierres positivo
     assert abs(m["max_drawdown"] - 20.0) < 1e-9      # 1010 -> 990
+
+
+def test_backtest_surfaces_risk_events():
+    # Regresión: un broker sin la interfaz batch rompía el reconcile en TODOS
+    # los ticks y el resultado salía vacío sin rastro. Ahora el error aflora.
+    from hlbot.backtest.runner import run_backtest
+    from hlbot.models import RiskLimits, SessionConfig
+    limits = RiskLimits(10.0, 4, 2.0, 1e12, 1e12)
+    cfg = SessionConfig(watchlist=["ETH"], capital=60.0, limits=limits, grid_n=2)
+    candles = [Candle(t=(1000 + i) * 60_000, open=3000, high=3005, low=2995,
+                      close=3000, volume=1.0) for i in range(40)]
+    r = run_backtest("ETH", candles, [], cfg, {"ETH": 4})
+    assert "risk_events" in r
+    assert not any(e["kind"] == "reconcile_error" for e in r["risk_events"])

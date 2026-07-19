@@ -70,3 +70,27 @@ def test_step_applies_hourly_funding_long_pays_positive():
     b.step("ETH", _candle(3600000, 3000, 3000, 3000, 3000), 0.0001)  # cruza 1 hora, funding +
     assert b.cash < cash0                                        # largo paga funding positivo
     assert b.funding_total < 0                                   # a long paying positive funding gives negative funding_total
+
+
+def test_bulk_place_limits_rests_all():
+    # Paridad con HLClient.bulk_place_limits: el reconciliador batch (F3) depende
+    # de que el broker simulado exponga la misma interfaz.
+    b = _bk()
+    b.bulk_place_limits("ETH", [
+        {"is_buy": True, "price": 2990.0, "size": 0.0034},
+        {"is_buy": False, "price": 3010.0, "size": 0.0034, "reduce_only": False},
+    ])
+    oo = b.open_orders("ETH")
+    assert [o["limitPx"] for o in oo] == [2990.0, 3010.0]
+
+
+def test_cancel_orders_removes_only_given_oids():
+    b = _bk()
+    b.bulk_place_limits("ETH", [
+        {"is_buy": True, "price": 2990.0, "size": 0.0034},
+        {"is_buy": False, "price": 3010.0, "size": 0.0034},
+    ])
+    oids = [o["oid"] for o in b.open_orders("ETH")]
+    b.cancel_orders("ETH", [oids[0]])
+    oo = b.open_orders("ETH")
+    assert len(oo) == 1 and oo[0]["oid"] == oids[1]
