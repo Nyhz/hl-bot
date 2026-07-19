@@ -7,10 +7,14 @@ class RiskManager:
         self.limits = limits
 
     def can_open(self, notional: float, open_positions: int,
-                 leverage: float) -> tuple[bool, str]:
+                 leverage: float, already_open: bool = False) -> tuple[bool, str]:
         if notional > self.limits.max_position_notional:
             return False, "excede max_position_notional"
-        if open_positions >= self.limits.max_open_positions:
+        # max_open_positions limita el Nº de monedas con posición: añadir a una
+        # ya abierta no lo aumenta. Bloquearlo congela el grid en cuanto todas
+        # las monedas de la watchlist tienen posición (sin rungs de entrada no
+        # hay round-trips: solo queda el lado que reduce).
+        if not already_open and open_positions >= self.limits.max_open_positions:
             return False, "max_open_positions alcanzado"
         if leverage > self.limits.max_leverage:
             return False, "excede max_leverage"

@@ -22,6 +22,21 @@ def test_rejects_excess_leverage():
     ok, _ = _rm().can_open(notional=10.0, open_positions=0, leverage=3.0)
     assert ok is False
 
+def test_already_open_coin_bypasses_max_positions():
+    # añadir a una moneda YA abierta no aumenta el nº de posiciones: en el cap
+    # no debe rechazarse (bloquearlo congela el grid — soak de la sesión 5)
+    ok, _ = _rm().can_open(notional=10.0, open_positions=2, leverage=1.0,
+                           already_open=True)
+    assert ok is True
+
+def test_already_open_still_enforces_notional_and_leverage():
+    ok, _ = _rm().can_open(notional=20.0, open_positions=2, leverage=1.0,
+                           already_open=True)
+    assert ok is False
+    ok, _ = _rm().can_open(notional=10.0, open_positions=2, leverage=3.0,
+                           already_open=True)
+    assert ok is False
+
 def test_should_pause_on_daily_loss():
     pause, reason = _rm().should_pause(daily_pnl=-6.0, total_pnl=-6.0)
     assert pause is True and "diaria" in reason

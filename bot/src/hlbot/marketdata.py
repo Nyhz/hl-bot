@@ -6,8 +6,13 @@ llegó: el llamador degrada a REST/ATR. El backtester nunca construye este objet
 así que las estrategias tienen que funcionar igual sin él.
 
 El WebsocketManager del SDK NO reconecta solo: ensure_alive() (llamado por el
-runner en cada tick) reconstruye la conexión si el feed entero lleva callado
-RESTART_AFTER_S, con throttle para no ciclar en una caída larga de red.
+runner en cada tick) reconstruye la conexión si el socket está muerto
+(keep_running=False) o si NO llega NINGÚN mensaje en RESTART_AFTER_S, con
+throttle para no ciclar en una caída larga de red. La señal de vida es
+"llegan mensajes", no "llegan datos": el SDK descarta los pongs del servidor
+(uno por ping cada 50s) antes de los callbacks, y en testnet el BBO puede no
+cambiar en minutos — sin contar los pongs, mercado callado parecía conexión
+muerta y se reconectaba cada ~11 min (369 veces en el soak de la sesión 5).
 
 GOTCHA (verificado 2026-07-13): suscribirse a un coin que no existe en el
 universo hace que HL cierre el websocket ENTERO sin mensaje de error (XRP no
@@ -23,11 +28,29 @@ from collections import deque
 from hyperliquid.websocket_manager import WebsocketManager
 
 MAX_AGE_S = 3.0           # frescura máxima para servir un dato
-RESTART_AFTER_S = 30.0    # silencio total del feed -> reconectar
+RESTART_AFTER_S = 150.0   # sin NINGÚN mensaje (ni pongs, cada 50s) -> reconectar
+RECONNECT_THROTTLE_S = 30.0   # mínimo entre reconexiones
 VOL_HALFLIFE_S = 60.0     # semivida de la EWMA de varianza realizada
 TAPE_RETENTION_S = 60.0   # cuánto tape se retiene (la ventana de lectura es menor)
 PX_HIST_RETENTION_S = 180.0   # histórico de mids para markouts (+5s/+30s/+120s)
 PX_HIST_MIN_GAP_S = 0.5       # muestreo máximo del histórico (bbo puede ser muy denso)
+
+
+class _LivenessWS(WebsocketManager):
+    """WebsocketManager que notifica CUALQUIER mensaje entrante.
+
+    El on_message del SDK descarta pongs y el saludo de conexión antes de
+    llegar a los callbacks de suscripción; para medir vida de la conexión
+    hacen falta TODOS los mensajes.
+    """
+
+    def __init__(self, base_url: str, on_any_message):
+        super().__init__(base_url)
+        self._on_any_message = on_any_message
+
+    def on_message(self, ws, message):
+        self._on_any_message()
+        super().on_message(ws, message)
 
 
 class MarketData:
@@ -51,7 +74,7 @@ class MarketData:
         self._connect()
 
     def _connect(self) -> None:
-        ws = WebsocketManager(self.base_url)
+        ws = _LivenessWS(self.base_url, self._touch)
         # daemon: que el proceso pueda salir aunque el WS siga vivo
         ws.daemon = True
         ws.ping_sender.daemon = True
@@ -71,13 +94,18 @@ class MarketData:
                 pass
             self._ws = None
 
+    def _touch(self) -> None:
+        self._last_msg_ts = time.time()
+
     def ensure_alive(self) -> None:
         now = time.time()
-        if now - self._last_msg_ts < RESTART_AFTER_S:
+        dead = (self._ws is not None
+                and not getattr(getattr(self._ws, "ws", None), "keep_running", False))
+        if not dead and now - self._last_msg_ts < RESTART_AFTER_S:
             return
-        if now - self._last_restart < RESTART_AFTER_S:
+        if now - self._last_restart < RECONNECT_THROTTLE_S:
             return   # throttle: una reconexión por ventana, no un bucle
-        print("[marketdata] feed callado, reconectando websocket", flush=True)
+        print("[marketdata] socket muerto o feed callado, reconectando", flush=True)
         self.stop()
         try:
             self._connect()

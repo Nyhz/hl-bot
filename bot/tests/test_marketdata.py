@@ -1,6 +1,9 @@
 import time
+from types import SimpleNamespace
 
-from hlbot.marketdata import MarketData, MAX_AGE_S, RESTART_AFTER_S
+from hlbot.marketdata import (
+    MarketData, _LivenessWS, MAX_AGE_S, RESTART_AFTER_S, RECONNECT_THROTTLE_S,
+)
 
 
 def _md(coins=("ETH",)):
@@ -86,6 +89,37 @@ def test_ensure_alive_quiet_when_fresh(monkeypatch):
     monkeypatch.setattr(md, "_connect", lambda: (_ for _ in ()).throw(AssertionError))
     md._last_msg_ts = time.time()
     md.ensure_alive()                        # no toca nada
+
+
+def test_liveness_ws_notifies_any_message():
+    # los pongs y el saludo de conexión NO llegan a los callbacks del SDK, pero
+    # SÍ deben contar como vida (sin esto: mercado callado = "conexión muerta"
+    # y una reconexión cada ~11 min, 369 en el soak de la sesión 5)
+    seen = []
+    ws = _LivenessWS("https://example", lambda: seen.append(1))
+    ws.on_message(None, "Websocket connection established.")
+    ws.on_message(None, '{"channel": "pong"}')
+    assert len(seen) == 2
+
+
+def test_quiet_market_with_pongs_does_not_reconnect(monkeypatch):
+    md = _md()
+    monkeypatch.setattr(md, "_connect", lambda: (_ for _ in ()).throw(AssertionError))
+    md._last_restart = time.time() - 1000
+    md._touch()                              # llegó un pong: la conexión vive
+    md.ensure_alive()                        # no reconecta aunque no haya datos
+
+
+def test_dead_socket_reconnects_even_with_fresh_msgs(monkeypatch):
+    md = _md()
+    calls = []
+    monkeypatch.setattr(md, "_connect", lambda: calls.append(1))
+    monkeypatch.setattr(md, "stop", lambda: None)
+    md._last_msg_ts = time.time()            # mensajes frescos, pero run_forever murió
+    md._ws = SimpleNamespace(ws=SimpleNamespace(keep_running=False))
+    md._last_restart = time.time() - RECONNECT_THROTTLE_S - 1
+    md.ensure_alive()
+    assert calls == [1]
 
 
 def test_malformed_bbo_does_not_poison_cache():
