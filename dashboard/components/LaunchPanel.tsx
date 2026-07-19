@@ -4,24 +4,23 @@ import { buildLaunchBody, postControl, type LaunchForm } from "@/lib/control";
 import { toast } from "sonner";
 import { Hint } from "./Hint";
 
-const MAX_OPEN = 4;  // tope duro de posiciones simultáneas (fijado en el servidor)
-const DEFAULTS: LaunchForm = {
-  watchlist: [], capital: 40, gridN: 4, gridRangePct: 0.02, adxThreshold: 25,
-  maxPositionNotional: 10, maxOpenPositions: MAX_OPEN, maxLeverage: 2, maxCoinNotional: 30,
-  dailyLossLimit: 5, totalLossLimit: 20,
-};
+// El resto del perfil (pares, spread, grid, caps de exposición, freno de
+// régimen) es FIJO en el servidor: son parámetros de rentabilidad validados
+// con test runs y no se eligen por sesión.
+const MIN_CAPITAL = 30; // grid_n(3) × $10 por rung; el bot lo valida igual
+const DEFAULTS: LaunchForm = { capital: 60, maxLoss: 10 };
 
-export function LaunchPanel({ coins, state, onLaunched }: { coins: { name: string }[]; state: string; onLaunched?: () => void }) {
+export function LaunchPanel({ state, onLaunched }: { state: string; onLaunched?: () => void }) {
   const [f, setF] = useState<LaunchForm>(DEFAULTS);
   const [busy, setBusy] = useState(false);
   const idle = state === "idle";
-  const toggle = (c: string) =>
-    setF((p) => ({ ...p, watchlist: p.watchlist.includes(c) ? p.watchlist.filter((x) => x !== c) : [...p.watchlist, c] }));
   const num = (k: keyof LaunchForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((p) => ({ ...p, [k]: Number(e.target.value) }));
 
   async function launch() {
-    if (!f.watchlist.length) { toast.error("Elige al menos un par"); return; }
+    if (f.capital < MIN_CAPITAL) { toast.error(`Capital mínimo $${MIN_CAPITAL}`); return; }
+    if (f.maxLoss <= 0) { toast.error("La pérdida máxima debe ser mayor que 0"); return; }
+    if (f.maxLoss > f.capital) { toast.error("La pérdida máxima no puede superar el capital"); return; }
     setBusy(true);
     const r = await postControl("launch", buildLaunchBody(f));
     setBusy(false);
@@ -35,31 +34,14 @@ export function LaunchPanel({ coins, state, onLaunched }: { coins: { name: strin
       {!idle && <div className="muted" style={{ fontSize: 12 }}>sesión activa — cierra para lanzar otra</div>}
       {idle && (
         <>
-          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
-            Pares a vigilar <Hint text="Monedas que la sesión vigila y opera. Elige al menos una." />
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-            {coins.map((c) => (
-              <button key={c.name} onClick={() => toggle(c.name)}
-                style={{ padding: "4px 8px", border: "1px solid #1c1f26", borderRadius: 6,
-                  background: f.watchlist.includes(c.name) ? "var(--neon-green)" : "transparent",
-                  color: f.watchlist.includes(c.name) ? "#000" : "var(--text)", cursor: "pointer", fontSize: 12 }}>
-                {c.name}
-              </button>
-            ))}
-          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 12 }}>
-            <label>Tamaño de posición ($) <Hint text="USDC por orden/posición. Mínimo $10 (el de Hyperliquid). Lo usan cada rung del grid y cada entrada de tendencia." /><input type="number" min={10} step={1} defaultValue={f.maxPositionNotional} onChange={num("maxPositionNotional")} style={inputS} /></label>
-            <label>Capital ($) <Hint text="USDC asignado a la sesión. Debe cubrir grid_n × tamaño de posición." /><input type="number" defaultValue={f.capital} onChange={num("capital")} style={inputS} /></label>
-            <label>Rungs del grid (grid_n) <Hint text="Nº de escalones (órdenes) por lado del grid. Más rungs = más órdenes y más fees." /><input type="number" defaultValue={f.gridN} onChange={num("gridN")} style={inputS} /></label>
-            <label>Apalancamiento máx (×) <Hint text="Leverage máximo; el bot lo fija isolated por moneda y rechaza órdenes que lo superen." /><input type="number" defaultValue={f.maxLeverage} onChange={num("maxLeverage")} style={inputS} /></label>
-            <label>Tope por moneda ($) <Hint text="Notional máximo de posición abierta por moneda. Evita que una sola acapare o que se apile grid+tendencia." /><input type="number" defaultValue={f.maxCoinNotional} onChange={num("maxCoinNotional")} style={inputS} /></label>
-            <label>Umbral ADX <Hint text="Fuerza de tendencia (ADX) a partir de la cual el bot pasa de grid a modo tendencia. Típico 25." /><input type="number" defaultValue={f.adxThreshold} onChange={num("adxThreshold")} style={inputS} /></label>
-            <label>Stop pérdida diaria ($) <Hint text="Si la pérdida del día llega a este valor, el bot pausa y cierra la sesión automáticamente." /><input type="number" defaultValue={f.dailyLossLimit} onChange={num("dailyLossLimit")} style={inputS} /></label>
-            <label>Stop pérdida total ($) <Hint text="Si la pérdida total de la sesión llega a este valor, el bot pausa y cierra automáticamente." /><input type="number" defaultValue={f.totalLossLimit} onChange={num("totalLossLimit")} style={inputS} /></label>
+            <label>Capital ($) <Hint text={`USDC asignado a la sesión. Mínimo $${MIN_CAPITAL} (3 rungs de $10 por lado del grid).`} /><input type="number" min={MIN_CAPITAL} step={5} defaultValue={f.capital} onChange={num("capital")} style={inputS} /></label>
+            <label>Pérdida máxima ($) <Hint text="Si la pérdida (diaria o total) llega a este valor, el bot deja de abrir y cierra la sesión automáticamente." /><input type="number" min={1} step={1} defaultValue={f.maxLoss} onChange={num("maxLoss")} style={inputS} /></label>
           </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
-            máx {MAX_OPEN} posiciones simultáneas <Hint text="Tope duro fijado en el servidor; no editable." />
+          <div className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.7 }}>
+            Perfil fijo <Hint text="Parámetros de estrategia validados con los test runs; se cambian en código, no por sesión." />:
+            BTC + ETH · grid A-S 3 rungs/lado · spread suelo 15 bps · momentum off ·
+            caps $10/orden · $30/moneda · Δneto $45 · 2× isolated
           </div>
           <button onClick={launch} disabled={busy}
             style={{ marginTop: 10, width: "100%", padding: 10, border: "none", borderRadius: 6,

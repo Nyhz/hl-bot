@@ -1,7 +1,6 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLiveSnapshot } from "@/lib/useLiveSnapshot";
-import { api } from "@/lib/api";
 import { HeaderBar } from "@/components/HeaderBar";
 import { EquityHero } from "@/components/EquityHero";
 import { EquityCurve } from "@/components/EquityCurve";
@@ -18,9 +17,7 @@ import { useEventFeedback } from "@/hooks/useEventFeedback";
 export default function Home() {
   const { snapshot, connected } = useLiveSnapshot();
   useEventFeedback(snapshot);
-  const [coinsList, setCoinsList] = useState<{ name: string }[]>([]);
   const [launchOpen, setLaunchOpen] = useState(false);
-  useEffect(() => { api.getCoins().then(setCoinsList).catch(() => {}); }, []);
   const sessionState = snapshot?.state ?? "idle";
 
   return (
@@ -49,7 +46,7 @@ export default function Home() {
       ) : (
         <div className="panel muted" style={{ padding: 16 }}>conectando…</div>
       )}
-      <LaunchModal coins={coinsList} state={sessionState} open={launchOpen} onClose={() => setLaunchOpen(false)} />
+      <LaunchModal state={sessionState} open={launchOpen} onClose={() => setLaunchOpen(false)} />
     </main>
   );
 }

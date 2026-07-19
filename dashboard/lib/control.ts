@@ -1,22 +1,13 @@
 export interface LaunchForm {
-  watchlist: string[]; capital: number; gridN: number; gridRangePct: number; adxThreshold: number;
-  maxPositionNotional: number; maxOpenPositions: number; maxLeverage: number;
-  maxCoinNotional: number; dailyLossLimit: number; totalLossLimit: number;
+  capital: number; maxLoss: number;
 }
+// El servidor aplica el perfil afinado (watchlist, spread, grid, caps de
+// exposición): desde el dashboard solo se eligen capital y pérdida máxima.
 export interface LaunchBody {
-  watchlist: string[]; capital: number; grid_n: number; grid_range_pct: number; adx_threshold: number;
-  limits: { max_position_notional: number; max_open_positions: number; max_leverage: number; max_coin_notional: number; daily_loss_limit: number; total_loss_limit: number };
+  capital: number; max_loss: number;
 }
 export function buildLaunchBody(f: LaunchForm): LaunchBody {
-  return {
-    watchlist: f.watchlist, capital: f.capital, grid_n: f.gridN,
-    grid_range_pct: f.gridRangePct, adx_threshold: f.adxThreshold,
-    limits: {
-      max_position_notional: f.maxPositionNotional, max_open_positions: f.maxOpenPositions,
-      max_leverage: f.maxLeverage, max_coin_notional: f.maxCoinNotional,
-      daily_loss_limit: f.dailyLossLimit, total_loss_limit: f.totalLossLimit,
-    },
-  };
+  return { capital: f.capital, max_loss: f.maxLoss };
 }
 export async function postControl(action: string, body?: unknown): Promise<{ ok: boolean; status: number; data: unknown }> {
   const res = await fetch(`/api/control/${action}`, {
