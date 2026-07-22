@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useLayoutEffect, useRef } from "react";
-import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi } from "lightweight-charts";
+import { createChart, CandlestickSeries, TickMarkType, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import type { CoinView, Trigger } from "@/lib/types";
 import { api } from "@/lib/api";
 import { candleSeries, fmtFunding, fundingColor } from "@/lib/view";
@@ -19,7 +19,20 @@ export function FocusChart({ coin, coinView, mid, fill }: { coin: string | null;
       height: fill ? (el.clientHeight || 240) : 320,
       layout: { background: { color: "transparent" }, textColor: "#8a8f98" },
       grid: { vertLines: { color: "#14171c" }, horzLines: { color: "#14171c" } },
-      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
+      rightPriceScale: { borderVisible: false },
+      // Velas intradía: eje con HH:MM en hora LOCAL (por defecto la librería
+      // pinta el día del mes en UTC — "22 22 22" con zoom de horas).
+      timeScale: {
+        borderVisible: false, timeVisible: true, secondsVisible: false,
+        tickMarkFormatter: (t: UTCTimestamp, type: TickMarkType) =>
+          type < TickMarkType.Time
+            ? new Date(t * 1000).toLocaleDateString([], { day: "2-digit", month: "short" })
+            : new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      },
+      localization: {
+        timeFormatter: (t: UTCTimestamp) =>
+          new Date(t * 1000).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }),
+      },
     });
     const series = chart.addSeries(CandlestickSeries, {
       upColor: "#00ff88", downColor: "#ff4466", wickUpColor: "#00ff88", wickDownColor: "#ff4466", borderVisible: false,
