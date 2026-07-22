@@ -287,6 +287,27 @@ class Store:
                 (session_id, fkey, ts, coin, amount),
             )
 
+    def record_extras(self, session_id: int, fills: list[dict],
+                      funding: list[dict]) -> None:
+        # Persistencia dedup (por tid/fkey) de los payloads crudos de
+        # user_fills/user_funding de HL. La usan el runner en cada refresco y
+        # el engine en la foto final de kill/close.
+        for f in fills:
+            tid = str(f.get("tid") if f.get("tid") is not None else f.get("hash", ""))
+            if not tid:
+                continue
+            self.record_fill_unique(
+                session_id, tid, int(f.get("time", 0) or 0) // 1000, f.get("coin"),
+                f.get("side", ""), f.get("dir", ""), float(f.get("px", 0) or 0),
+                float(f.get("sz", 0) or 0), float(f.get("fee", 0) or 0),
+                float(f.get("closedPnl", 0) or 0))
+        for fp in funding:
+            delta = fp.get("delta", {}) or {}
+            fkey = str(fp.get("hash") or f"{fp.get('time','')}-{delta.get('coin','')}")
+            self.record_funding_unique(
+                session_id, fkey, int(fp.get("time", 0) or 0) // 1000,
+                delta.get("coin", ""), float(delta.get("usdc", 0) or 0))
+
     def save_runtime(self, session_id: int, payload: str) -> None:
         # Snapshot del estado vivo del engine (1 fila por sesión, upsert por tick):
         # lo que permite rehidratar la sesión tras un reinicio del proceso.
@@ -311,6 +332,18 @@ class Store:
             return [dict(r) for r in rows]
 
     MARKOUT_COLS = {5: "markout_5s", 30: "markout_30s", 120: "markout_120s"}
+
+    def recent_markout(self, session_id: int, since_ts: float,
+                       horizon_s: int = 30) -> tuple[int, float | None]:
+        # Muestra móvil del markout: nº de fills con markout ya calculado
+        # desde since_ts y su media en bps (None sin muestra).
+        col = self.MARKOUT_COLS[horizon_s]
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT COUNT({col}), AVG({col}) FROM fills "
+                f"WHERE session_id=? AND ts >= ? AND {col} IS NOT NULL",
+                (session_id, int(since_ts))).fetchone()
+            return int(row[0] or 0), row[1]
 
     def fills_missing_markout(self, session_id: int, horizon_s: int,
                               now: float, max_lookback_s: float) -> list[dict]:

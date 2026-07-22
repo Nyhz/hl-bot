@@ -95,8 +95,15 @@ export function MicroPanel({ snapshot }: { snapshot: Snapshot }) {
       })}
       {markouts.length > 0 && (
         <div style={{ marginTop: 8, borderTop: "1px solid #1c1f26", paddingTop: 6 }}>
-          <div className="muted" title="bps medios a favor del fill; negativo = selección adversa" style={{ fontSize: 11, marginBottom: 4 }}>
-            FILL QUALITY · markout bps (+5s/+30s/+2m)
+          <div className="muted" title="bps medios a favor del fill; negativo = selección adversa" style={{ fontSize: 11, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+            <span>FILL QUALITY · markout bps (+5s/+30s/+2m)</span>
+            {snapshot.markout_health && snapshot.markout_health.mean_30s_bps != null && (
+              <span title={`media móvil 30s de las últimas ${Math.round(snapshot.markout_health.window_s / 3600)}h (${snapshot.markout_health.n} fills); sostenida en negativo = el grid paga selección adversa`}
+                    style={{ fontWeight: 700, color: snapshot.markout_health.alert ? "var(--neon-red)" : bpsColor(snapshot.markout_health.mean_30s_bps) }}>
+                {snapshot.markout_health.alert ? "⚠ EDGE " : "2h "}
+                {fmtBps(snapshot.markout_health.mean_30s_bps)}
+              </span>
+            )}
           </div>
           {markouts.map((m) => (
             <div key={m.coin} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "2px 0" }}>

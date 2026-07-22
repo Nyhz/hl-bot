@@ -48,7 +48,8 @@ class BacktestBody(BaseModel):
 
 def create_app(engine: SessionEngine, control_token: str,
                market_state_provider, account_provider=lambda: {},
-               whales_provider=lambda: {}) -> FastAPI:
+               whales_provider=lambda: {},
+               markout_health_provider=lambda: None) -> FastAPI:
     app = FastAPI(title="hlbot")
     origin = os.getenv("DASHBOARD_ORIGIN", "http://localhost:3000")
     app.add_middleware(
@@ -71,6 +72,7 @@ def create_app(engine: SessionEngine, control_token: str,
             snap["positions"] = acc.get("positions", [])
             snap["tape_recent"] = merge_tape(decisions, fills, limit=20)
             snap["l1_actions"] = getattr(engine.client, "l1_actions", {})
+            snap["markout_health"] = markout_health_provider()
             return snap
         except Exception as e:
             print(f"[snapshot] error: {e}", flush=True)
@@ -142,8 +144,9 @@ def create_app(engine: SessionEngine, control_token: str,
         with engine.lock:
             if engine.risk is None:
                 raise HTTPException(status_code=409, detail="no hay sesion activa")
+            # misma relación que el perfil del launch: diaria = total/2
             engine.risk.limits = replace(engine.risk.limits,
-                                         daily_loss_limit=body.max_loss,
+                                         daily_loss_limit=body.max_loss / 2,
                                          total_loss_limit=body.max_loss)
         return {"ok": True}
 

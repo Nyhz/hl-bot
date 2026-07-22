@@ -203,3 +203,46 @@ def test_pnl_snapshot_rich_columns(tmp_path):
     assert row["net_delta"] == -12.0 and row["l1_total"] == 77
     # el getter de la curva de equity sigue funcionando igual
     assert store.get_pnl_snapshots(sid)[0]["total_pnl"] == 40.5
+
+
+def test_record_extras_parses_and_dedups(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    store.init_schema()
+    sid = store.create_session(["ETH"], 60.0)
+    fills = [
+        {"tid": 111, "time": 1_784_000_000_000, "coin": "ETH", "side": "A",
+         "dir": "Close Long", "px": "3000.5", "sz": "0.01", "fee": "0.0015",
+         "closedPnl": "-0.5"},
+        {"hash": "0xabc", "time": 1_784_000_001_000, "coin": "BTC", "side": "B",
+         "dir": "Open Long", "px": 60000.0, "sz": 0.0002, "fee": 0.0018},
+        {"time": 1_784_000_002_000, "coin": "ETH"},   # sin tid ni hash: se ignora
+    ]
+    funding = [{"time": 1_784_000_000_000, "hash": "0xf1",
+                "delta": {"coin": "ETH", "usdc": "-0.01"}}]
+    store.record_extras(sid, fills, funding)
+    store.record_extras(sid, fills, funding)           # segunda pasada: dedup total
+    got = store.get_fills(sid)
+    assert len(got) == 2
+    eth = next(f for f in got if f["coin"] == "ETH")
+    assert eth["closed_pnl"] == -0.5 and eth["price"] == 3000.5
+    assert len(store.get_funding(sid)) == 1
+
+
+def test_recent_markout_windowed_mean(tmp_path):
+    import time as _t
+    store = Store(str(tmp_path / "t.db"))
+    store.init_schema()
+    sid = store.create_session(["ETH"], 60.0)
+    now = int(_t.time())
+    # 2 fills dentro de la ventana, 1 fuera, 1 dentro pero sin markout aún
+    store.record_fill_unique(sid, "a", now - 100, "ETH", "B", "Open Long", 3000, 0.01, 0.001, 0)
+    store.record_fill_unique(sid, "b", now - 200, "ETH", "A", "Close Long", 3001, 0.01, 0.001, 0.1)
+    store.record_fill_unique(sid, "c", now - 9000, "ETH", "B", "Open Long", 2990, 0.01, 0.001, 0)
+    store.record_fill_unique(sid, "d", now - 50, "ETH", "B", "Open Long", 3002, 0.01, 0.001, 0)
+    for f in store.fills_missing_markout(sid, 30, now + 1000, 100000):
+        if f["ts"] != now - 50:                      # "d" queda sin markout
+            store.set_fill_markout(f["id"], 30, 4.0 if f["ts"] >= now - 300 else -9.0)
+    n, mean = store.recent_markout(sid, now - 7200)
+    assert n == 2 and mean == 4.0                    # "c" fuera de ventana, "d" NULL
+    n_all, _ = store.recent_markout(sid, 0)
+    assert n_all == 3

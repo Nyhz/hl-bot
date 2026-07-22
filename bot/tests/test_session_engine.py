@@ -65,7 +65,7 @@ class FakeStore:
     def __init__(self):
         self.decisions = []; self.sid = 1; self.ended = []; self.risk_events = []
         self.runtime = None; self.config_json = None
-        self.micro = []; self.pnl_snapshots = []
+        self.micro = []; self.pnl_snapshots = []; self.extras = []
     def create_session(self, watchlist, capital, mode="testnet"): return self.sid
     def end_session(self, sid): self.ended.append(sid)
     def record_decision(self, sid, coin, action, reason): self.decisions.append((coin, action, reason))
@@ -74,6 +74,7 @@ class FakeStore:
     def save_runtime(self, sid, payload): self.runtime = payload
     def set_session_config(self, sid, config_json): self.config_json = config_json
     def record_micro_batch(self, sid, rows): self.micro.extend(rows)
+    def record_extras(self, sid, fills, funding): self.extras.append((sid, fills, funding))
 
 def _cfg():
     limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
@@ -590,6 +591,66 @@ def test_kill_success_when_positions_clear():
     eng.kill(confirm=True)
     assert eng.state == SessionState.IDLE
     assert store.ended == [1]
+
+
+def test_kill_persists_final_fills():
+    # Los fills que produce el propio kill (market_close) no los ve el runner:
+    # el refresco de extras solo corre en sesión. Soak 1: el cierre del kill
+    # dejó ~-$0.5 fuera de la BD. La foto final debe grabarlos, filtrando lo
+    # anterior al arranque de la sesión.
+    client = FakeClient()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    start_ms = int(eng.session_started_at * 1000)
+    kill_fill = {"tid": "t-kill", "time": start_ms + 1000, "coin": "ETH",
+                 "side": "A", "dir": "Close Long", "px": 3000.0, "sz": 0.01,
+                 "fee": 0.001, "closedPnl": -0.5}
+    old_fill = dict(kill_fill, tid="t-old", time=start_ms - 60_000)
+    client.user_fills = lambda: [old_fill, kill_fill]
+    client.user_funding = lambda start: []
+    eng.kill(confirm=True)
+    assert store.ended == [1]
+    assert len(store.extras) == 1
+    sid, fills, _ = store.extras[0]
+    assert sid == 1
+    assert [f["tid"] for f in fills] == ["t-kill"]      # el pre-sesión queda fuera
+
+
+def test_kill_survives_final_fills_failure():
+    # La foto final es best-effort: un fallo de red no puede bloquear el kill
+    # ni dejar la sesión abierta; queda rastro como extras_error.
+    client = FakeClient()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    def _boom(): raise RuntimeError("red caida")
+    client.user_fills = _boom
+    eng.kill(confirm=True)
+    assert eng.state == SessionState.IDLE
+    assert store.ended == [1]
+    assert any(k == "extras_error" for k, _ in store.risk_events)
+
+
+def test_close_natural_end_persists_final_fills():
+    # El fin natural de un Close (n_open==0 en el tick) también persiste la
+    # foto final antes de end_session.
+    client = FakeClient()
+    store = FakeStore()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    start_ms = int(eng.session_started_at * 1000)
+    client.user_fills = lambda: [
+        {"tid": "t-last", "time": start_ms + 500, "coin": "ETH", "side": "B",
+         "dir": "Close Short", "px": 3000.0, "sz": 0.01, "fee": 0.001,
+         "closedPnl": 0.2}]
+    client.user_funding = lambda start: []
+    eng.close()
+    eng.tick(_flat_ms())                                # sin posiciones -> fin
+    assert eng.state == SessionState.IDLE
+    assert store.ended == [1]
+    assert len(store.extras) == 1
+    assert store.extras[0][1][0]["tid"] == "t-last"
 
 
 def test_kill_closes_orphan_positions_without_session():

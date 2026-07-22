@@ -48,7 +48,7 @@ def refresh_account_cache(client, engine, prev: dict, fetch_extras: bool,
             funding = client.user_funding(session_start_ms)
             funding_total = sum(float(f.get("delta", {}).get("usdc", 0) or 0) for f in funding)
             if store is not None and engine.session_id is not None:
-                _record_extras(store, engine.session_id, fills, funding)
+                store.record_extras(engine.session_id, fills, funding)
         except Exception as e:
             print(f"[account_cache] extras error: {e}", flush=True)
             # Soak 2: userFunding de testnet devolvió (500,'null') y la sesión
@@ -80,22 +80,6 @@ def _record_extras_error(store, session_id: int, e: Exception) -> None:
     _extras_err["ts"] = now
 
 
-def _record_extras(store, session_id: int, fills: list[dict], funding: list[dict]) -> None:
-    for f in fills:
-        tid = str(f.get("tid") if f.get("tid") is not None else f.get("hash", ""))
-        if not tid:
-            continue
-        store.record_fill_unique(
-            session_id, tid, int(f.get("time", 0) or 0) // 1000, f.get("coin"),
-            f.get("side", ""), f.get("dir", ""), float(f.get("px", 0) or 0),
-            float(f.get("sz", 0) or 0), float(f.get("fee", 0) or 0),
-            float(f.get("closedPnl", 0) or 0))
-    for fp in funding:
-        delta = fp.get("delta", {}) or {}
-        fkey = str(fp.get("hash") or f"{fp.get('time','')}-{delta.get('coin','')}")
-        store.record_funding_unique(
-            session_id, fkey, int(fp.get("time", 0) or 0) // 1000,
-            delta.get("coin", ""), float(delta.get("usdc", 0) or 0))
 
 
 def candles_to_models(raw: list[dict]) -> list[Candle]:
@@ -286,6 +270,45 @@ def update_markouts(store, md, session_id) -> None:
             store.set_fill_markout(f["id"], h, bps)
 
 
+MARKOUT_HEALTH_EVERY_TICKS = 12        # evaluar ~1/min (tick de 5s)
+MARKOUT_HEALTH_WINDOW_S = 7200.0       # media móvil de 2h
+MARKOUT_HEALTH_MIN_FILLS = 30          # sin muestra suficiente no hay señal
+MARKOUT_ALERT_EVERY_S = 3600.0         # re-notificar como mucho 1/h
+
+_markout_health = {"v": None, "alert_ts": 0.0}
+
+
+def check_markout_health(store, engine, notifier=None) -> None:
+    # Indicador nº1 de si el edge transfiere (análisis final soak 3, de cara
+    # a mainnet): media móvil del markout 30s sostenida en negativo = el grid
+    # está pagando selección adversa. El bot NO se para solo — la decisión es
+    # humana: risk_event + notificación macOS + dato visible en /state.
+    if engine.session_id is None:
+        _markout_health["v"] = None
+        return
+    n, mean = store.recent_markout(engine.session_id,
+                                   time.time() - MARKOUT_HEALTH_WINDOW_S)
+    alert = n >= MARKOUT_HEALTH_MIN_FILLS and mean is not None and mean < 0.0
+    _markout_health["v"] = {
+        "window_s": int(MARKOUT_HEALTH_WINDOW_S), "n": n,
+        "mean_30s_bps": round(mean, 2) if mean is not None else None,
+        "alert": alert,
+    }
+    if not alert:
+        return
+    now = time.time()
+    if now - _markout_health["alert_ts"] < MARKOUT_ALERT_EVERY_S:
+        return
+    _markout_health["alert_ts"] = now
+    detail = (f"markout 30s medio {mean:+.2f} bps en {n} fills "
+              f"({int(MARKOUT_HEALTH_WINDOW_S // 3600)}h): el grid esta "
+              "pagando seleccion adversa")
+    store.record_risk_event(engine.session_id, "markout_alert", detail)
+    if notifier is None:
+        from hlbot.watchdog import notify as notifier
+    notifier(f"hl-bot: edge en negativo — {detail}")
+
+
 def run_tick(engine, client, store, shared, cache_holder, counters,
              md=None, candle_cache: dict | None = None,
              funding_cache: dict | None = None, whales=None):
@@ -332,6 +355,8 @@ def run_tick(engine, client, store, shared, cache_holder, counters,
                 client, engine, cache_holder["v"],
                 fetch_extras=(counters["loop"] % ACCOUNT_EXTRAS_EVERY == 0), store=store)
             update_markouts(store, md, engine.session_id)
+            if counters["loop"] % MARKOUT_HEALTH_EVERY_TICKS == 0:
+                check_markout_health(store, engine)
             # Reconexiones del feed WS -> queryables en el análisis del run
             rec = getattr(md, "reconnects", 0) if md is not None else 0
             if rec != counters.get("ws_reconnects", 0):
@@ -387,7 +412,8 @@ def main() -> None:
         print(f"[whales] no arrancó: {e}", flush=True)
 
     app = create_app(engine, cfg.control_token, lambda: shared,
-                     lambda: cache_holder["v"], whales.recent)
+                     lambda: cache_holder["v"], whales.recent,
+                     markout_health_provider=lambda: _markout_health["v"])
 
     @app.on_event("startup")
     async def _start_loop():

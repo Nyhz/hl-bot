@@ -1,4 +1,5 @@
 from hlbot.main import candles_to_models, build_market_state, refresh_account_cache
+from hlbot import main
 from hlbot.models import Candle
 from hlbot.store import Store
 
@@ -324,3 +325,56 @@ def test_update_markouts_120s_computable(tmp_path):
     update_markouts(store, _Md(), sid)
     f = store.get_fills(sid)[0]
     assert abs(f["markout_120s"] - 100.0) < 1e-6
+
+
+# --- monitor de salud del markout (media móvil 30s, análisis final soak 3) ---
+
+class _MkStore:
+    def __init__(self, n, mean):
+        self._r = (n, mean); self.events = []
+    def recent_markout(self, sid, since): return self._r
+    def record_risk_event(self, sid, kind, detail): self.events.append((kind, detail))
+
+
+class _MkEngine:
+    session_id = 7
+
+
+def _reset_markout_state():
+    main._markout_health["v"] = None
+    main._markout_health["alert_ts"] = 0.0
+
+
+def test_markout_health_alert_on_sustained_negative():
+    _reset_markout_state()
+    store = _MkStore(40, -1.2)
+    notes = []
+    main.check_markout_health(store, _MkEngine(), notifier=notes.append)
+    h = main._markout_health["v"]
+    assert h["alert"] is True and h["n"] == 40 and h["mean_30s_bps"] == -1.2
+    assert any(k == "markout_alert" for k, _ in store.events)
+    assert len(notes) == 1
+    # segunda pasada dentro de la hora: el estado se refresca pero NO re-notifica
+    main.check_markout_health(store, _MkEngine(), notifier=notes.append)
+    assert len(notes) == 1
+    assert sum(1 for k, _ in store.events if k == "markout_alert") == 1
+
+
+def test_markout_health_quiet_with_positive_or_thin_sample():
+    _reset_markout_state()
+    notes = []
+    # media positiva: sin alerta
+    main.check_markout_health(_MkStore(40, 2.5), _MkEngine(), notifier=notes.append)
+    assert main._markout_health["v"]["alert"] is False
+    # muestra insuficiente: negativo pero sin señal
+    main.check_markout_health(_MkStore(5, -3.0), _MkEngine(), notifier=notes.append)
+    assert main._markout_health["v"]["alert"] is False
+    assert notes == []
+
+
+def test_markout_health_clears_without_session():
+    _reset_markout_state()
+    main._markout_health["v"] = {"alert": True}
+    class _Idle: session_id = None
+    main.check_markout_health(_MkStore(0, None), _Idle(), notifier=lambda m: None)
+    assert main._markout_health["v"] is None

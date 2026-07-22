@@ -52,7 +52,7 @@ def test_launch_applies_fixed_profile():
     assert cfg.watchlist == ["BTC", "ETH"]
     assert engine.risk.limits.max_net_delta == 45.0
     assert engine.risk.limits.max_open_positions == 2
-    assert engine.risk.limits.daily_loss_limit == 8.0
+    assert engine.risk.limits.daily_loss_limit == 4.0   # diaria = total/2
     assert engine.risk.limits.total_loss_limit == 8.0
 
 def test_launch_rejects_bad_max_loss_422():

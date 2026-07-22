@@ -148,9 +148,12 @@ PROFILE_WATCHLIST = ["BTC", "ETH"]
 
 
 def tuned_session_config(capital: float, max_loss: float) -> SessionConfig:
+    # daily = total/2 (relación del soak 2): daily=total autorizaba a perder
+    # el tope entero en un solo día sin haber visto aún un día de tendencia
+    # fuerte con este perfil (análisis final soak 3, 2026-07-22).
     limits = RiskLimits(
         max_position_notional=10.0, max_open_positions=2, max_leverage=2.0,
-        daily_loss_limit=max_loss, total_loss_limit=max_loss,
+        daily_loss_limit=max_loss / 2, total_loss_limit=max_loss,
         max_coin_notional=30.0, max_net_delta=45.0)
     return SessionConfig(
         watchlist=list(PROFILE_WATCHLIST), capital=capital, limits=limits,

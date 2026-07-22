@@ -262,9 +262,28 @@ class SessionEngine:
                 self.store.record_risk_event(self.session_id, "kill_error", msg)
         if remaining != []:
             raise RuntimeError("kill incompleto: " + "; ".join(errors))
+        self._persist_final_extras()
         if self.session_id is not None:
             self.store.end_session(self.session_id)
         self._reset()
+
+    def _persist_final_extras(self) -> None:
+        # Los fills del propio cierre no los captura el runner: el refresco de
+        # extras solo corre EN sesión y la sesión muere aquí (soak 1: el cierre
+        # del kill dejó ~-$0.5 fuera de la BD y el PnL registrado salió
+        # positivo siendo negativo). Best-effort: un fallo no bloquea el fin.
+        if self.session_id is None or self.session_started_at is None:
+            return
+        start_ms = int(self.session_started_at * 1000)
+        try:
+            fills = [f for f in self.client.user_fills()
+                     if int(f.get("time", 0) or 0) >= start_ms]
+            funding = self.client.user_funding(start_ms)
+            self.store.record_extras(self.session_id, fills, funding)
+        except Exception as e:
+            self.store.record_risk_event(
+                self.session_id, "extras_error",
+                f"fills finales no registrados: {e}")
 
     def _reset(self) -> None:
         self.state = SessionState.IDLE
@@ -507,6 +526,7 @@ class SessionEngine:
                 l1_total=getattr(self.client, "l1_actions", {}).get("total"))
         if self.state == SessionState.CLOSING:
             if n_open == 0:
+                self._persist_final_extras()
                 if self.session_id is not None:
                     self.store.end_session(self.session_id)
                 self._reset()

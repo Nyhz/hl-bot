@@ -36,7 +36,7 @@ export function LaunchPanel({ state, onLaunched }: { state: string; onLaunched?:
         <>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 12 }}>
             <label>Capital ($) <Hint text={`USDC asignado a la sesión. Mínimo $${MIN_CAPITAL} (3 rungs de $10 por lado del grid).`} /><input type="number" min={MIN_CAPITAL} step={5} defaultValue={f.capital} onChange={num("capital")} style={inputS} /></label>
-            <label>Pérdida máxima ($) <Hint text="Si la pérdida (diaria o total) llega a este valor, el bot deja de abrir y cierra la sesión automáticamente." /><input type="number" min={1} step={1} defaultValue={f.maxLoss} onChange={num("maxLoss")} style={inputS} /></label>
+            <label>Pérdida máxima ($) <Hint text="Tope TOTAL de la sesión; el tope diario es la mitad. Al cruzar cualquiera de los dos, el bot deja de abrir y cierra la sesión automáticamente." /><input type="number" min={1} step={1} defaultValue={f.maxLoss} onChange={num("maxLoss")} style={inputS} /></label>
           </div>
           <div className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.7 }}>
             Perfil fijo <Hint text="Parámetros de estrategia validados con los test runs; se cambian en código, no por sesión." />:

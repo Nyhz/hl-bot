@@ -18,6 +18,9 @@ export interface WhaleFill {
   dir: string; closed_pnl: number; tid: string;
 }
 export interface L1Actions { orders: number; cancels: number; other: number; total: number; }
+export interface MarkoutHealth {
+  window_s: number; n: number; mean_30s_bps: number | null; alert: boolean;
+}
 export interface MarkoutRow {
   coin: string; n: number;
   m5: number | null; m30: number | null; m120: number | null;
@@ -41,6 +44,7 @@ export interface Snapshot {
   watchlist: string[]; coins: Record<string, CoinView>;
   account: Account; positions: Position[]; tape_recent: TapeEvent[];
   l1_actions?: L1Actions;
+  markout_health?: MarkoutHealth | null;
 }
 export interface Candle { time: number; open: number; high: number; low: number; close: number; }
 export interface SessionSummary {
