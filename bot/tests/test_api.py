@@ -50,6 +50,8 @@ def test_launch_applies_fixed_profile():
     assert cfg.min_spread_frac == 0.0015
     assert cfg.trend_entries is False
     assert cfg.watchlist == ["BTC", "ETH"]
+    assert cfg.toxicity_flow_ratio == 0.85       # calibre mainnet, no el 0.7 default
+    assert cfg.toxicity_min_usd == 400_000.0
     assert engine.risk.limits.max_net_delta == 45.0
     assert engine.risk.limits.max_open_positions == 2
     assert engine.risk.limits.daily_loss_limit == 4.0   # diaria = total/2

@@ -155,10 +155,15 @@ def tuned_session_config(capital: float, max_loss: float) -> SessionConfig:
         max_position_notional=10.0, max_open_positions=2, max_leverage=2.0,
         daily_loss_limit=max_loss / 2, total_loss_limit=max_loss,
         max_coin_notional=30.0, max_net_delta=45.0)
+    # Toxicity recalibrada para MAINNET (sesión 9, 2026-07-22): el flujo real
+    # en 15s promedia $112k en BTC (pico $537k) — con el 0.7/$20k de testnet
+    # el 50% de los ticks eran "tóxicos" y el grid vivía retirado. 0.85/$400k
+    # = solo cascadas de verdad; recalibrar con la distribución acumulada.
     return SessionConfig(
         watchlist=list(PROFILE_WATCHLIST), capital=capital, limits=limits,
         grid_n=3, min_spread_frac=0.0015,
-        trend_entries=False, adx_threshold=999.0)
+        trend_entries=False, adx_threshold=999.0,
+        toxicity_flow_ratio=0.85, toxicity_min_usd=400_000.0)
 
 
 @dataclass
