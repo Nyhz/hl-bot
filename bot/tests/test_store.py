@@ -217,15 +217,19 @@ def test_record_extras_parses_and_dedups(tmp_path):
          "dir": "Open Long", "px": 60000.0, "sz": 0.0002, "fee": 0.0018},
         {"time": 1_784_000_002_000, "coin": "ETH"},   # sin tid ni hash: se ignora
     ]
-    funding = [{"time": 1_784_000_000_000, "hash": "0xf1",
-                "delta": {"coin": "ETH", "usdc": "-0.01"}}]
+    ZERO_HASH = "0x" + "0" * 64                        # HL: hash nulo en funding
+    funding = [{"time": 1_784_000_000_000, "hash": ZERO_HASH,
+                "delta": {"coin": "ETH", "usdc": "-0.01"}},
+               {"time": 1_784_003_600_000, "hash": ZERO_HASH,
+                "delta": {"coin": "ETH", "usdc": "0.02"}}]
     store.record_extras(sid, fills, funding)
     store.record_extras(sid, fills, funding)           # segunda pasada: dedup total
     got = store.get_fills(sid)
     assert len(got) == 2
     eth = next(f for f in got if f["coin"] == "ETH")
     assert eth["closed_pnl"] == -0.5 and eth["price"] == 3000.5
-    assert len(store.get_funding(sid)) == 1
+    # dos horas de funding con el mismo hash nulo: AMBAS grabadas, sin colisión
+    assert len(store.get_funding(sid)) == 2
 
 
 def test_recent_markout_windowed_mean(tmp_path):

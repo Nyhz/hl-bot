@@ -303,7 +303,11 @@ class Store:
                 float(f.get("closedPnl", 0) or 0))
         for fp in funding:
             delta = fp.get("delta", {}) or {}
-            fkey = str(fp.get("hash") or f"{fp.get('time','')}-{delta.get('coin','')}")
+            # HL devuelve hash=0x000…0 en TODOS los pagos de funding (no es un
+            # hash real): usarlo de fkey colisionaba globalmente y descartaba
+            # en silencio todo pago posterior al primero (sesión 10 mainnet).
+            # Un pago por moneda y hora → time-coin es única de verdad.
+            fkey = f"{fp.get('time', '')}-{delta.get('coin', '')}"
             self.record_funding_unique(
                 session_id, fkey, int(fp.get("time", 0) or 0) // 1000,
                 delta.get("coin", ""), float(delta.get("usdc", 0) or 0))
