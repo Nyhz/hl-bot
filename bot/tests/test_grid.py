@@ -146,3 +146,22 @@ def test_rung_notional_scales_inverse_to_vol():
     assert wild == 10.0
     mid_vol = g._rung_notional(ms, sigma=7.5)            # 0.25% -> $20
     assert abs(mid_vol - 20.0) < 1e-9
+
+
+def test_too_toxic_relative_threshold():
+    # Gate v2: el volumen exigido escala con la EWMA del propio coin — una
+    # cascada es flujo anómalo para SU hora, no un número fijo de USD.
+    g = GridStrategy(_cfg(toxicity_flow_ratio=0.85, toxicity_min_usd=100_000.0,
+                          toxicity_rel_mult=3.0))
+    ms = _ms()
+    ms.flow_ratio = 0.95
+    ms.flow_total_usd = 400_000.0
+    ms.flow_ewma_usd = 200_000.0
+    assert g.too_toxic(ms) is False              # 400k < 3×200k: hora punta normal
+    ms.flow_total_usd = 700_000.0
+    assert g.too_toxic(ms) is True               # 700k ≥ 600k: anómalo de verdad
+    ms.flow_ewma_usd = None                      # EWMA fría (arranque): cae al suelo absoluto
+    ms.flow_total_usd = 150_000.0
+    assert g.too_toxic(ms) is True
+    ms.flow_total_usd = 50_000.0
+    assert g.too_toxic(ms) is False

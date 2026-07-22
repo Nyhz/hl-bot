@@ -31,7 +31,8 @@ class FakeClient:
     def place_limit(self, coin, is_buy, price, size, post_only=True, reduce_only=False):
         self._next_oid += 1
         self.orders.append((coin, is_buy, price, size, reduce_only, post_only))
-        self.resting.append({"coin": coin, "limitPx": price, "sz": size, "oid": self._next_oid})
+        self.resting.append({"coin": coin, "limitPx": price, "sz": size,
+                             "oid": self._next_oid, "side": "B" if is_buy else "A"})
         return {"status": "ok"}
     def cancel_order(self, coin, oid):
         self.canceled_oids.append((coin, oid))
@@ -52,7 +53,8 @@ class FakeClient:
             self.orders.append((coin, it["is_buy"], it["price"], it["size"],
                                 bool(it.get("reduce_only", False)), post_only))
             self.resting.append({"coin": coin, "limitPx": it["price"],
-                                 "sz": it["size"], "oid": self._next_oid})
+                                 "sz": it["size"], "oid": self._next_oid,
+                                 "side": "B" if it["is_buy"] else "A"})
         return {"status": "ok"}
     def cancel_orders(self, coin, oids):
         self.canceled_oids.extend((coin, o) for o in oids)
@@ -1281,3 +1283,100 @@ def test_trend_entries_off_keeps_reducing_side_against_trend():
     eng.tick(_flat_ms())
     buys = [o for o in client.orders if o[1]]
     assert len(buys) > 0                                # el lado reductor sobrevive
+
+
+# --- gate de toxicidad v2 + F2 preservación de cola (plan mainnet 2026-07-22) ---
+
+def _cfg_v2():
+    limits = RiskLimits(10.0, 4, 2.0, 5.0, 20.0)
+    return SessionConfig(watchlist=["ETH"], capital=40.0, limits=limits,
+                         grid_n=4, grid_range_pct=0.02,
+                         toxicity_rearm_ratio=0.5, toxicity_cooldown_max_s=180.0)
+
+
+def _hot_ms(ratio=0.9):
+    ms = _flat_ms()
+    ms["ETH"].flow_ratio = ratio
+    ms["ETH"].flow_total_usd = 100000.0
+    return ms
+
+
+def test_toxicity_schmitt_no_rearma_con_flujo_caliente():
+    import time as _t
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg_v2())
+    eng.tick(_hot_ms())                                  # dispara
+    assert "ETH" in eng._tox_pull
+    eng.toxic_until["ETH"] = _t.time() - 1               # cooldown expirado...
+    client2 = eng.client
+    n_orders = len(client2.orders)
+    eng.tick(_hot_ms(ratio=0.6))                         # ...pero |ratio| 0.6 ≥ rearm 0.5
+    assert len(client2.orders) == n_orders               # NO recoloca (histéresis)
+    assert eng.toxic_until["ETH"] > _t.time()            # retirada extendida
+
+
+def test_toxicity_rearma_con_flujo_frio_y_registra_telemetria():
+    import time as _t
+    store = FakeStore()
+    eng = SessionEngine(FakeClient(), store)
+    eng.launch(_cfg_v2())
+    eng.tick(_hot_ms())
+    eng.toxic_until["ETH"] = _t.time() - 1
+    eng.tick(_flat_ms())                                 # tape limpio: re-armar
+    assert "ETH" not in eng._tox_pull
+    assert any(k == "toxicity_rearm" for k, _ in store.risk_events)
+    assert len(eng.client.orders) > 0                    # vuelve a cotizar
+
+
+def test_toxicity_cooldown_escalonado():
+    import time as _t
+    eng = SessionEngine(FakeClient(), FakeStore())
+    eng.launch(_cfg_v2())
+    eng.tick(_hot_ms())                                  # disparo 1: base 30s
+    first_until = eng.toxic_until["ETH"]
+    assert first_until - _t.time() <= 31
+    eng.toxic_until["ETH"] = _t.time() - 1
+    eng.tick(_hot_ms(ratio=0.3))                         # frío: re-arma
+    eng.tick(_hot_ms())                                  # disparo 2 cercano: 60s
+    assert eng._tox_level["ETH"] == 2
+    assert eng.toxic_until["ETH"] - _t.time() > 45
+
+
+def test_reconcile_conserva_orden_joven_y_no_duplica():
+    import time as _t
+    client = FakeClient()
+    eng = SessionEngine(client, FakeStore())
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    eng.tick(ms)                                         # coloca la escalera
+    grid = eng.grids["ETH"]
+    tol = grid.half_spread(ms["ETH"], grid._sigma(ms["ETH"])) * 0.75
+    victim = client.resting[0]
+    victim["limitPx"] = float(victim["limitPx"]) + tol * 1.5   # deriva moderada (≤ 2×tol)
+    victim["timestamp"] = _t.time() * 1000               # recién colocada
+    n_before = len(client.orders)
+    eng.tick(ms)
+    assert victim["oid"] not in [o for _, o in client.canceled_oids]   # conservada
+    assert len(client.orders) == n_before                # y sin rung duplicado
+    victim["timestamp"] = (_t.time() - 300) * 1000       # ahora es vieja
+    eng.tick(ms)
+    assert victim["oid"] in [o for _, o in client.canceled_oids]       # recolocada
+
+
+def test_phantom_cross_cuenta_y_emite_telemetria():
+    import time as _t
+    store = FakeStore()
+    client = FakeClient()
+    eng = SessionEngine(client, store)
+    eng.launch(_cfg())
+    ms = _flat_ms()
+    eng.tick(ms)                                         # escalera en reposo
+    # mid por debajo de TODOS los rungs: las compras quedan cruzadas sin fill
+    lower = _flat_ms()
+    for c in lower.values():
+        c.mid = min(float(o["limitPx"]) for o in client.resting) - 50
+    eng.tick(lower)
+    assert eng._phantom_counts.get("ETH", 0) > 0
+    eng._phantom_emit_ts = _t.time() - 9999              # forzar volcado
+    eng.tick(lower)
+    assert any(k == "telemetry" and "cruces fantasma" in d for k, d in store.risk_events)

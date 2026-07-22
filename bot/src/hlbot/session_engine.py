@@ -16,6 +16,11 @@ from hlbot.hl_client import order_response_error, order_response_errors
 PNL_SNAPSHOT_EVERY_TICKS = 12   # ~1/min a 5s/tick
 REJECT_LOG_EVERY_S = 300.0      # un rechazo persistente se re-loguea cada 5 min,
                                 # no cada tick (sesión 5: 230k filas del mismo motivo)
+FLOW_EWMA_ALPHA = 0.006         # EWMA del flow_total: τ efectiva ~15 min a 5s/tick
+TOX_ESCALATE_RESET_S = 600.0    # 10 min sin disparos -> el cooldown escalonado vuelve a base
+REPRICE_MIN_AGE_S = 90.0        # F2: no recolocar órdenes más jóvenes (la cola es capital)
+REPRICE_HARD_TOL_MULT = 2.0     # ...salvo deriva > 2×tol (=1.5·half): ahí sí recolocar
+PHANTOM_EMIT_EVERY_S = 1800.0   # T1: emitir contadores de cruces fantasma cada 30 min
 
 
 def _order_is_buy(o: dict) -> bool:
@@ -49,6 +54,18 @@ class SessionEngine:
         # coin -> epoch hasta el que el grid NO cotiza (toxicity gate). Estado
         # transitorio (≤cooldown): no se persiste; tras reiniciar se re-evalúa.
         self.toxic_until: dict[str, float] = {}
+        # Gate v2: EWMA del flow_total por coin (base del umbral relativo; se
+        # re-aprende en ~15 min tras reinicio), nivel de escalado del cooldown,
+        # último disparo y (ts, mid) del pull para la telemetría de re-arme.
+        self._flow_ewma: dict[str, float] = {}
+        self._tox_level: dict[str, int] = {}
+        self._tox_last_fire: dict[str, float] = {}
+        self._tox_pull: dict[str, tuple[float, float]] = {}
+        # T1: oids ya contados como "cruce fantasma" y contador por coin de la
+        # ventana de telemetría en curso (se emite y resetea cada 30 min).
+        self._phantom_seen: dict[str, set] = {}
+        self._phantom_counts: dict[str, int] = {}
+        self._phantom_emit_ts: float = time.time()
         self._net_delta = 0.0   # Σ notional firmado entre monedas (se recalcula por tick)
         # Reposo vivo por coin: (Σ notional de compras, Σ de ventas). Lo refresca
         # el reconciliador cada tick; los caps lo descuentan como peor caso.
@@ -100,6 +117,13 @@ class SessionEngine:
         self.trend_confirmed = set()
         self.trend_regime = set()
         self.toxic_until = {}
+        self._flow_ewma = {}
+        self._tox_level = {}
+        self._tox_last_fire = {}
+        self._tox_pull = {}
+        self._phantom_seen = {}
+        self._phantom_counts = {}
+        self._phantom_emit_ts = time.time()
         self._reject_throttle = {}
         self._resting_adds = {}
         self.paused = False
@@ -303,6 +327,12 @@ class SessionEngine:
         self.trend_confirmed = set()
         self.trend_regime = set()
         self.toxic_until = {}
+        self._flow_ewma = {}
+        self._tox_level = {}
+        self._tox_last_fire = {}
+        self._tox_pull = {}
+        self._phantom_seen = {}
+        self._phantom_counts = {}
         self._reject_throttle = {}
         self._resting_adds = {}
 
@@ -457,6 +487,13 @@ class SessionEngine:
             if coin not in self.grids:
                 continue
             ms.inventory = pos_sizes.get(coin, 0.0)
+            # EWMA del flow_total (τ efectiva ~15 min con tick de 5s): la línea
+            # base contra la que el gate v2 mide si el flujo actual es anómalo.
+            if ms.flow_total_usd is not None:
+                prev = self._flow_ewma.get(coin)
+                self._flow_ewma[coin] = (ms.flow_total_usd if prev is None
+                                         else prev + FLOW_EWMA_ALPHA * (ms.flow_total_usd - prev))
+            ms.flow_ewma_usd = self._flow_ewma.get(coin)
             micro_rows.append({
                 "ts": int(time.time()), "coin": coin, "mid": ms.mid,
                 "best_bid": ms.best_bid, "best_ask": ms.best_ask,
@@ -517,6 +554,15 @@ class SessionEngine:
         # ~minuto, equity con exposición (unrealized/gross/net_delta/L1).
         self._tick_count += 1
         self.store.record_micro_batch(self.session_id, micro_rows)
+        # T1: volcar contadores de cruces fantasma cada 30 min (y resetear la
+        # ventana) — el ratio cruces/fills mide cuánta cola estamos perdiendo.
+        if time.time() - self._phantom_emit_ts >= PHANTOM_EMIT_EVERY_S:
+            self._phantom_emit_ts = time.time()
+            if self._phantom_counts:
+                det = ", ".join(f"{c}={n}" for c, n in sorted(self._phantom_counts.items()))
+                self.store.record_risk_event(self.session_id, "telemetry",
+                                             f"cruces fantasma 30min: {det}")
+                self._phantom_counts = {}
         if self._tick_count % PNL_SNAPSHOT_EVERY_TICKS == 0:
             unrealized = sum(float((p.get("position", {}) or {}).get("unrealizedPnl", 0) or 0)
                              for p in asset_positions)
@@ -542,20 +588,51 @@ class SessionEngine:
         mantiene la retirada durante el cooldown.
         """
         now = time.time()
-        if now < self.toxic_until.get(coin, 0.0):
+        until = self.toxic_until.get(coin, 0.0)
+        if now < until:
             return True
+        if until > 0 and coin in self._tox_pull:
+            # Cooldown expirado: histéresis (Schmitt). Si el flujo sigue caliente
+            # (|ratio| ≥ rearm), extender la retirada SIN recolocar — el ciclo
+            # pull→30s→replace→pull fue el 72% del churn del canario s10.
+            ratio_now = abs(ms.flow_ratio) if ms.flow_ratio is not None else 0.0
+            if self.cfg.toxicity_rearm_ratio < 1.0 and ratio_now >= self.cfg.toxicity_rearm_ratio:
+                self.toxic_until[coin] = now + self.cfg.toxicity_cooldown_s
+                return True
+            # Re-arme: telemetría T2 — cuánto duró y cuánto derivó el mid (si la
+            # deriva es grande, el pull evitó fills adversos; si ~0, fue ruido).
+            pull_ts, pull_mid = self._tox_pull.pop(coin)
+            if pull_mid:
+                self.store.record_risk_event(
+                    self.session_id, "toxicity_rearm",
+                    f"{coin}: re-armado tras {int(now - pull_ts)}s, "
+                    f"deriva {(ms.mid - pull_mid) / pull_mid * 1e4:+.1f} bps")
+            self.toxic_until[coin] = 0.0
         if not self.grids[coin].too_toxic(ms):
             return False
-        self.toxic_until[coin] = now + self.cfg.toxicity_cooldown_s
+        # Disparo. Cooldown escalonado: re-disparos cercanos doblan la retirada
+        # (una tendencia sostenida no se cura en 30s) hasta el tope configurado.
+        level = self._tox_level.get(coin, 0)
+        if now - self._tox_last_fire.get(coin, 0.0) > TOX_ESCALATE_RESET_S:
+            level = 0
+        cooldown = self.cfg.toxicity_cooldown_s
+        if self.cfg.toxicity_cooldown_max_s > 0:
+            cooldown = min(cooldown * (2 ** level), self.cfg.toxicity_cooldown_max_s)
+        self._tox_level[coin] = level + 1
+        self._tox_last_fire[coin] = now
+        self.toxic_until[coin] = now + cooldown
+        self._tox_pull[coin] = (now, ms.mid)
         try:
             self.client.cancel_all(coin)
             self._resting_adds[coin] = (0.0, 0.0)
         except Exception as e:
             self.store.record_risk_event(self.session_id, "toxicity", str(e))
+        flow_k = f" flujo ${ms.flow_total_usd / 1000:.0f}k" if ms.flow_total_usd else ""
+        ewma_k = f" (ewma ${ms.flow_ewma_usd / 1000:.0f}k)" if ms.flow_ewma_usd else ""
         self.store.record_decision(
             self.session_id, coin, ActionType.CANCEL.value,
-            f"toxicity gate: flow_ratio {ms.flow_ratio:+.2f} -> "
-            f"retirada {int(self.cfg.toxicity_cooldown_s)}s")
+            f"toxicity gate: flow_ratio {ms.flow_ratio:+.2f}{flow_k}{ewma_k} -> "
+            f"retirada {int(cooldown)}s")
         return True
 
     def _force_close_positions(self, asset_positions: list) -> None:
@@ -636,11 +713,40 @@ class SessionEngine:
             # de cola; una banda más ancha recoloca solo cuando de verdad toca.
             tol = max(grid.half_spread(ms, grid._sigma(ms)) * 0.75, 1e-9)
             open_orders = self.client.open_orders(coin)
-            # 1) cancelar stale en UN batch: reposo lejos de cualquier precio deseado
-            stale = [o["oid"] for o in open_orders
-                     if o.get("oid") is not None
-                     and not any(abs(float(o.get("limitPx", 0) or 0) - dp) <= tol
-                                 for dp, _ in desired)]
+            now = time.time()
+            # T1: cruce fantasma — el mid atravesó el nivel de un rung en reposo
+            # y la orden sigue viva (nos adelantó la cola). Una vez por oid.
+            seen = self._phantom_seen.setdefault(coin, set())
+            live_oids = set()
+            for o in open_orders:
+                oid = o.get("oid")
+                if oid is None:
+                    continue
+                live_oids.add(oid)
+                px = float(o.get("limitPx", 0) or 0)
+                crossed = (ms.mid < px) if _order_is_buy(o) else (ms.mid > px)
+                if crossed and oid not in seen:
+                    seen.add(oid)
+                    self._phantom_counts[coin] = self._phantom_counts.get(coin, 0) + 1
+            seen &= live_oids
+            # 1) cancelar stale en UN batch: reposo lejos de cualquier precio
+            # deseado. F2 (canario s10): una orden JOVEN con deriva moderada se
+            # CONSERVA — recolocarla la manda al final de la cola y la cola es
+            # lo que da fills (fill rate 2.5% vs 27% en testnet).
+            hard_tol = tol * REPRICE_HARD_TOL_MULT
+            stale, young_px = [], []
+            for o in open_orders:
+                if o.get("oid") is None:
+                    continue
+                px = float(o.get("limitPx", 0) or 0)
+                dist = min((abs(px - dp) for dp, _ in desired), default=float("inf"))
+                if dist <= tol:
+                    continue                              # sigue en sitio
+                age = now - float(o.get("timestamp", 0) or 0) / 1000.0
+                if dist <= hard_tol and age < REPRICE_MIN_AGE_S:
+                    young_px.append(px)                   # deriva moderada: conservar cola
+                    continue
+                stale.append(o["oid"])
             if stale:
                 self.client.cancel_orders(coin, stale)
                 self.store.record_decision(
@@ -661,6 +767,10 @@ class SessionEngine:
             to_place = []
             for dp, d in desired:
                 if any(abs(dp - rp) <= tol for rp in rest_px):
+                    continue
+                # F2: una orden joven conservada "cubre" su rung deseado — colocar
+                # también el teórico sería duplicar el nivel a bps de distancia.
+                if any(abs(dp - yp) <= hard_tol for yp in young_px):
                     continue
                 if not self._limit_allowed(ms, d, n_open, equity, gross,
                                            coin_notional, rest_buy, rest_sell):

@@ -51,7 +51,10 @@ def test_launch_applies_fixed_profile():
     assert cfg.trend_entries is False
     assert cfg.watchlist == ["BTC", "ETH"]
     assert cfg.toxicity_flow_ratio == 0.85       # calibre mainnet, no el 0.7 default
-    assert cfg.toxicity_min_usd == 400_000.0
+    assert cfg.toxicity_min_usd == 100_000.0     # suelo absoluto; el umbral real es relativo
+    assert cfg.toxicity_rel_mult == 3.0          # flujo ≥ 3×EWMA del propio coin
+    assert cfg.toxicity_rearm_ratio == 0.5       # histéresis Schmitt
+    assert cfg.toxicity_cooldown_max_s == 180.0  # cooldown escalonado 30→180s
     assert engine.risk.limits.max_net_delta == 45.0
     assert engine.risk.limits.max_open_positions == 2
     assert engine.risk.limits.daily_loss_limit == 4.0   # diaria = total/2

@@ -51,6 +51,7 @@ class MarketState:
     flow_usd: float | None = None       # USD firmado del tape (ventana corta)
     flow_total_usd: float | None = None  # USD total del tape en la misma ventana
     flow_ratio: float | None = None     # firmado/total en [-1, 1]; None sin volumen
+    flow_ewma_usd: float | None = None  # media móvil del flow_total (engine); base del umbral relativo
 
 
 @dataclass
@@ -129,6 +130,11 @@ class SessionConfig:
     toxicity_flow_ratio: float = 0.7     # |flow_ratio| que dispara la retirada
     toxicity_min_usd: float = 20000.0    # volumen mínimo en ventana para fiarse de la señal
     toxicity_cooldown_s: float = 30.0    # cuánto tiempo retirarse tras dispararse
+    # Gate v2 (canario mainnet s10: el flujo intradía varía ~6×, un umbral USD
+    # absoluto no separa cascada de hora punta). Defaults = comportamiento legado.
+    toxicity_rel_mult: float = 0.0       # >0: exigir flujo ≥ mult × EWMA(flow_total)
+    toxicity_rearm_ratio: float = 1.0    # <1: tras cooldown, re-armar solo con |ratio| < esto
+    toxicity_cooldown_max_s: float = 0.0  # >0: cooldown escalonado ×2 por re-disparo, con este tope
     # Vol-sizing del rung: notional = clamp(risk_per_rung_usd / (sigma/mid),
     # $10 mínimo de HL, max_position_notional). 0 = desactivado (tamaño fijo v1).
     # Solo muerde si max_position_notional > $10 (el mínimo de HL es el suelo).
@@ -163,7 +169,9 @@ def tuned_session_config(capital: float, max_loss: float) -> SessionConfig:
         watchlist=list(PROFILE_WATCHLIST), capital=capital, limits=limits,
         grid_n=3, min_spread_frac=0.0015,
         trend_entries=False, adx_threshold=999.0,
-        toxicity_flow_ratio=0.85, toxicity_min_usd=400_000.0)
+        toxicity_flow_ratio=0.85, toxicity_min_usd=100_000.0,
+        toxicity_rel_mult=3.0, toxicity_rearm_ratio=0.5,
+        toxicity_cooldown_max_s=180.0)
 
 
 @dataclass

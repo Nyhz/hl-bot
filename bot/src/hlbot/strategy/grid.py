@@ -39,10 +39,15 @@ class GridStrategy:
 
     def too_toxic(self, ms: MarketState) -> bool:
         # Flujo agresivo unidireccional con volumen suficiente: mejor retirarse
-        # que ser la liquidez contra la que corre el mercado.
+        # que ser la liquidez contra la que corre el mercado. Con rel_mult, el
+        # volumen exigido es RELATIVO a la media móvil del propio coin (una
+        # cascada es flujo anómalo para SU hora, no un número fijo de USD).
         if ms.flow_ratio is None or ms.flow_total_usd is None:
             return False
-        if ms.flow_total_usd < self.cfg.toxicity_min_usd:
+        floor = self.cfg.toxicity_min_usd
+        if self.cfg.toxicity_rel_mult > 0 and ms.flow_ewma_usd:
+            floor = max(floor, self.cfg.toxicity_rel_mult * ms.flow_ewma_usd)
+        if ms.flow_total_usd < floor:
             return False
         return abs(ms.flow_ratio) > self.cfg.toxicity_flow_ratio
 
